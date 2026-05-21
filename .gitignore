@@ -1,0 +1,40 @@
+# =====================================================================
+# Nur „notwendige Inhalte" werden ins Repo committed:
+#   - README.md / README.pdf  (Studierenden-Handbuch)
+#   - Sim-Skripte und plot_results.py je Übung
+#   - Hilfsskript solar_to_monthly.py + data/*.xlsx
+#   - formulas/, figures_illustrations/ und Geometrie-PNGs je System
+#   - requirements.txt
+# Alles unten wird NICHT committed.
+# =====================================================================
+
+# Instructor-Material (nicht ins Repo)
+SOLUTIONS.md
+SOLUTIONS.pdf
+README.docx
+run_solutions.py
+solutions_raw/
+
+# Sim-Output und Mesh-Zwischendateien
+**/out/
+**/out_*/
+**/figures/
+*.msh
+*.vtu
+*.pvd
+*.log
+_last.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+~$*.docx
+.vscode/
+.idea/

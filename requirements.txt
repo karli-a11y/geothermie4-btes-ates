@@ -1,0 +1,8 @@
+ogs>=6.5
+ogstools>=0.8
+gmsh
+meshio
+numpy
+pyvista>=0.45
+matplotlib
+openpyxl
