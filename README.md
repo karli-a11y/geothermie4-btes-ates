@@ -34,6 +34,21 @@ Parameter werden im `CONFIG`-Block am Anfang des Sim-Skripts editiert
 (Material, Betrieb, Zyklen, Geometrie, Mesh). Ergebnisbilder landen in
 `figures/`.
 
+## Experimentelle Varianten (Skizzen, OGS-Validierung ausstehend)
+
+- `btes/ex2_3d/btes_3d_bhe.py` — BTES 3D mit OGS-Modul
+  **`HEAT_TRANSPORT_BHE`** statt vereinfachter Volumen-Quelle. Sonden
+  als 1D-Linien­elemente eingebettet, BHE-Typ (1U/2U/CXA/CXC),
+  U-Rohr-Geometrie, Refrigerant und Steuerung über `CONFIG["bhe"]`
+  einstellbar.
+- `ates/ex1_2d/ates_radial_2d_line.py` — ATES 2D mit Filterstrecke
+  als **1D-Linie** und `NodalSourceTerm` am obersten Knoten als
+  Injektions­punkt (statt 2D-Volumen­filter).
+
+Beide sind als *Skizzen* gekennzeichnet — Mesh- und PRJ-Generierung
+funktionieren, der vollständige OGS-Lauf ist noch nicht
+end-to-end validiert.
+
 ## Repo-Inhalt
 
 | Pfad                          | Inhalt                                          |
