@@ -338,11 +338,11 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict, curves: dict) -> Path:
     tl = _se(root, "time_loop")
     procs = _se(tl, "processes")
     pref = _se(procs, "process", ref="HT")
-    nls = _se(pref, "nonlinear_solver"); _se(nls, "name", "basic_picard")
-    convs = _se(pref, "convergence_criteria")
-    for var, rtol in (("T", sol["rel_tol_T"]), ("p", sol["rel_tol_p"])):
-        c = _se(convs, "convergence_criterion")
-        _se(c, "type", "DeltaX"); _se(c, "norm_type", "NORM2"); _se(c, "reltol", rtol)
+    _se(pref, "nonlinear_solver", "basic_picard")
+    cc = _se(pref, "convergence_criterion")
+    _se(cc, "type", "PerComponentDeltaX"); _se(cc, "norm_type", "NORM2")
+    _se(cc, "reltols", f"{sol['rel_tol_T']} {sol['rel_tol_p']}")
+    td = _se(pref, "time_discretization"); _se(td, "type", "BackwardEuler")
     ts = _se(pref, "time_stepping")
     _se(ts, "type", "FixedTimeStepping")
     _se(ts, "t_initial", 0); _se(ts, "t_end", curves["t_total"])
@@ -352,6 +352,9 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict, curves: dict) -> Path:
     _se(out_el, "type", "VTK"); _se(out_el, "prefix", prefix)
     out_steps = _se(out_el, "timesteps"); pair = _se(out_steps, "pair")
     _se(pair, "repeat", n_steps); _se(pair, "each_steps", cfg["time"]["output_every_n_steps"])
+    out_vars = _se(out_el, "variables")
+    for _v in cfg["output"]["variables"]:
+        _se(out_vars, "variable", _v)
 
     # Parameters
     params = _se(root, "parameters")

@@ -3,8 +3,8 @@
 OpenGeoSys-Übungen zu **Borehole** und **Aquifer Thermal Energy Storage**
 (BTES, ATES) — Vorlesung *Geothermie 4*.
 
-📖 **Komplettes Tutorial:** siehe [`HANDBUCH.pdf`](HANDBUCH.pdf)
-(Theorie, Übungen, Aufgaben, Plot-Interpretation, ~22 Seiten).
+📖 **Übungsskript:** siehe [`UEBUNGSSKRIPT.pdf`](UEBUNGSSKRIPT.pdf)
+(Theorie, Übungen, Aufgaben, Plot-Interpretation, ~30 Seiten).
 
 ## Schnellstart
 
@@ -20,7 +20,7 @@ python -m pip install -r requirements.txt
 `ogs.exe` muss im `PATH` auffindbar sein (wird vom `ogs`-Wheel
 automatisch in `Scripts/` installiert — Verzeichnis ggf. zu `PATH`
 hinzufügen). Windows-Hinweise zur Microsoft-Store-Python-Installation
-im Handbuch, Abschnitt 5.
+im Übungsskript, Abschnitt 5.
 
 ## Übung starten
 
@@ -34,28 +34,23 @@ Parameter werden im `CONFIG`-Block am Anfang des Sim-Skripts editiert
 (Material, Betrieb, Zyklen, Geometrie, Mesh). Ergebnisbilder landen in
 `figures/`.
 
-## Experimentelle Varianten (Skizzen, OGS-Validierung ausstehend)
+## Erweiterte Varianten
 
 - `btes/ex2_3d/btes_3d_bhe.py` — BTES 3D mit OGS-Modul
   **`HEAT_TRANSPORT_BHE`** statt vereinfachter Volumen-Quelle. Sonden
   als 1D-Linien­elemente eingebettet, BHE-Typ (1U/2U/CXA/CXC),
   U-Rohr-Geometrie, Refrigerant und Steuerung über `CONFIG["bhe"]`
-  einstellbar.
-- `ates/ex1_2d/ates_radial_2d_line.py` — ATES 2D mit Filterstrecke
-  als **1D-Linie** und `NodalSourceTerm` am obersten Knoten als
-  Injektions­punkt (statt 2D-Volumen­filter).
-
-Beide sind als *Skizzen* gekennzeichnet — Mesh- und PRJ-Generierung
-funktionieren, der vollständige OGS-Lauf ist noch nicht
-end-to-end validiert.
+  einstellbar. **Läuft end-to-end durch** (Default: 3×3-Feld, Typ 1U,
+  ein Lade-/Entlade-Zyklus). Quantitative Validierung gegen die
+  OGS-Benchmarks `BHE_1U`/`BHE_2U` steht noch aus — Ergebnisse
+  qualitativ interpretieren.
 
 ## Repo-Inhalt
 
 | Pfad                          | Inhalt                                          |
 |-------------------------------|-------------------------------------------------|
-| `HANDBUCH.{md,pdf}`           | Tutorial (Theorie + Übungen + Aufgaben)         |
+| `UEBUNGSSKRIPT.{md,pdf}`      | Übungsskript (Theorie + Übungen + Aufgaben)     |
 | `btes/`, `ates/`              | Übungs-Ordner mit Sim- und Plot-Skripten        |
-| `solar_to_monthly.py`         | Solar­ertrag → Monatsprofil-Helfer (typisiert)  |
-| `formulas/`                   | Gerenderte LaTeX-Formelgrafiken (im Handbuch)   |
-| `figures_illustrations/`      | Schemazeichnungen (im Handbuch)                 |
+| `formulas/`                   | Gerenderte LaTeX-Formelgrafiken (im Übungsskript)   |
+| `figures_illustrations/`      | Schemazeichnungen (im Übungsskript)             |
 | `requirements.txt`            | Python-Abhängigkeiten                            |

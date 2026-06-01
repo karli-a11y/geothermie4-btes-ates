@@ -23,11 +23,32 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pyvista as pv
 
-from btes_3d import CONFIG
-
 DELTA_T_THRESHOLD = 1.0
 N_SNAPSHOTS       = 4
 DAY = 86400.0
+
+
+def load_config():
+    """Erkennt automatisch, welche BTES-3D-Variante gelaufen ist, und lädt
+    deren CONFIG. Bevorzugt die BHE-Variante (Standard-Übung mit echten
+    U-Rohr-Sonden); fällt auf die vereinfachte Volumenquelle zurück."""
+    here = Path(__file__).parent
+    for prefix, module in (("btes_3d_bhe", "btes_3d_bhe"),
+                            ("btes_3d",     "btes_3d")):
+        if (here / "out" / f"{prefix}.pvd").exists():
+            cfg = __import__(module).CONFIG
+            return cfg
+    # nichts gelaufen → vereinfachte Variante als Default importieren
+    return __import__("btes_3d").CONFIG
+
+
+def temperature_field(mesh) -> str:
+    """Name des 3D-Temperaturfelds: `temperature_soil` (BHE) oder `T`
+    (vereinfachte Variante)."""
+    for name in ("temperature_soil", "T"):
+        if name in mesh.point_data:
+            return name
+    raise KeyError("Kein Temperaturfeld (temperature_soil/T) im Mesh gefunden.")
 
 
 def read_pvd(pvd_path: Path):
@@ -39,7 +60,8 @@ def read_pvd(pvd_path: Path):
 
 
 def effective_rho_cp(cfg):
-    soil = cfg["materials"]["soil"]
+    layers = cfg["layers"]
+    soil = layers[len(layers) // 2]   # repräsentative (mittlere) Schicht = Sondenmaterial
     phi  = soil["porosity"]
     return (phi * cfg["fluid"]["rho_ref_kg_m3"] * cfg["fluid"]["cp_J_kgK"]
             + (1 - phi) * soil["rho_s_kg_m3"] * soil["cp_s_J_kgK"])
@@ -70,6 +92,7 @@ def cartesian_integral(mesh, field):
 
 
 def main() -> int:
+    CONFIG = load_config()
     out_dir = Path(CONFIG["output"]["out_dir"])
     prefix  = CONFIG["output"]["prefix"]
     pvd     = out_dir / f"{prefix}.pvd"
@@ -84,24 +107,24 @@ def main() -> int:
     rho_cp = effective_rho_cp(CONFIG)
     positions = borehole_positions(CONFIG)
 
-    z_cover = CONFIG["layers"]["soil_cover_thickness_m"]
-    z_zone  = CONFIG["layers"]["borehole_zone_thickness_m"]
-    z_bot   = CONFIG["layers"]["soil_bottom_thickness_m"]
-    z_total = z_cover + z_zone + z_bot
-    # Domäne in btes_3d.py: z=0 unten → top
-    z_field_top = z_bot + z_zone
-    z_field_bot = z_bot
+    # Domäne in btes_3d.py: z=0 unten → Oberfläche bei z_total.
+    # Sondentiefe wird von der Oberfläche nach unten gemessen.
+    z_total = sum(L["thickness_m"] for L in CONFIG["layers"])
+    z_field_top = z_total - CONFIG["borehole"]["depth_top_m"]
+    z_field_bot = z_total - CONFIG["borehole"]["depth_bottom_m"]
     z_mid = 0.5 * (z_field_top + z_field_bot)
 
     steps = read_pvd(pvd)
     times = np.array([t for t, _ in steps]); times_d = times / DAY
+
+    TEMP = temperature_field(pv.read(steps[0][1]))   # "temperature_soil" (BHE) oder "T"
 
     # 1) T(t) zentrales BH ---------------------------------------------
     bh_center = positions[len(positions) // 2]
     probe_point = np.array([[bh_center[0], bh_center[1], z_mid]])
     probe_T = []
     for _, f in steps:
-        m = pv.read(f); probe_T.append(float(pv.PolyData(probe_point).sample(m)["T"][0]))
+        m = pv.read(f); probe_T.append(float(pv.PolyData(probe_point).sample(m)[TEMP][0]))
     probe_T = np.array(probe_T)
 
     fig, ax = plt.subplots(figsize=(8, 4))
@@ -120,7 +143,7 @@ def main() -> int:
         m = pv.read(f)
         sl = m.slice(normal="z", origin=(0, 0, z_mid))
         pts = sl.points
-        sc = ax.tricontourf(pts[:, 0], pts[:, 1], sl["T"] - 273.15,
+        sc = ax.tricontourf(pts[:, 0], pts[:, 1], sl[TEMP] - 273.15,
                             levels=20, cmap="inferno")
         ax.scatter(positions[:, 0], positions[:, 1], c="cyan", s=8, marker="x")
         ax.set_xlabel("x [m]"); ax.set_title(f"t = {t/DAY:.0f} d"); ax.set_aspect("equal")
@@ -131,7 +154,7 @@ def main() -> int:
     # 3) Energie -------------------------------------------------------
     energy = []
     for _, f in steps:
-        m = pv.read(f); dT = np.asarray(m["T"]) - T0
+        m = pv.read(f); dT = np.asarray(m[TEMP]) - T0
         energy.append(rho_cp * cartesian_integral(m, dT))
     energy = np.array(energy) / 1e9
 
@@ -150,7 +173,7 @@ def main() -> int:
     cx, cy = positions.mean(axis=0)
     r_front = []
     for _, f in steps:
-        m = pv.read(f); pts = m.points; dT = np.asarray(m["T"]) - T0
+        m = pv.read(f); pts = m.points; dT = np.asarray(m[TEMP]) - T0
         in_zone = (pts[:, 2] >= z_field_bot) & (pts[:, 2] <= z_field_top)
         mask = in_zone & (dT > DELTA_T_THRESHOLD)
         if mask.any():

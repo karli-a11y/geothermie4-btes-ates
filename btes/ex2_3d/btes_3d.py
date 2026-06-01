@@ -6,6 +6,12 @@ Sondenfeld N x N im Untergrund. Je Sonde eine kleine Box als Subdomäne,
 auf der eine volumetrische Wärmequelle aufgeprägt wird (positiv bei Beladung,
 negativ bei Entladung). Wärmetransfer dominant über Wärmeleitung im Boden.
 
+Geometrie- und Materialmodell sind mit der 2D-Übung (btes_radial_2d.py)
+vereinheitlicht: der Untergrund ist eine freie Schichtliste (`layers`, von
+oben nach unten), jede Schicht mit eigenen Materialwerten; die Sonde wird
+über `borehole.depth_top_m`/`depth_bottom_m` (Tiefe unter Oberfläche)
+positioniert und kann mehrere Schichten durchstoßen.
+
 Im Gegensatz zum ATES (ates_3d.py) gibt es keinen Massenstrom — Strömungs-
 permeabilität wird sehr niedrig gewählt, sodass die HT-Prozessgleichung
 faktisch zu reiner Wärmeleitung degeneriert.
@@ -53,13 +59,35 @@ CONFIG: dict = {
         "size_y_m":  80.0,
         "z_base_m":   0.0,
     },
-    "layers": {
-        # Oberer "Cover" über dem Sondenfeld (z. B. Erdoberfläche)
-        "soil_cover_thickness_m":   5.0,
-        # Bereich, in dem die Sonden stecken (zwischen Cover und Bottom)
-        "borehole_zone_thickness_m": 80.0,
-        # Bottom unterhalb der Sonden (thermischer Puffer nach unten)
-        "soil_bottom_thickness_m":  30.0,
+    # ------------------------------------------------------------------
+    # SCHICHTEN  (von OBEN nach UNTEN, wie in der 2D-Übung)
+    # ------------------------------------------------------------------
+    # Freie Liste von Bodenschichten. Jede Schicht hat eigene Material­werte.
+    # Die Schicht­dicken addieren sich zur Gesamttiefe der Domain. Auf eine
+    # einzelne Bodenklasse zurückzufallen: einfach nur einen Eintrag setzen.
+    "layers": [
+        # name              thickness_m  permeability  porosity  rho_s  cp_s  lambda_s
+        {"name": "cover",    "thickness_m":  5.0,
+         "permeability_m2": 1.0e-15, "porosity": 0.35,
+         "rho_s_kg_m3": 1900.0, "cp_s_J_kgK": 1500.0, "lambda_s_W_mK": 1.4},
+        {"name": "bedrock",  "thickness_m": 80.0,
+         "permeability_m2": 1.0e-18, "porosity": 0.20,
+         "rho_s_kg_m3": 2700.0, "cp_s_J_kgK":  900.0, "lambda_s_W_mK": 2.5},
+        {"name": "basement", "thickness_m": 30.0,
+         "permeability_m2": 1.0e-19, "porosity": 0.10,
+         "rho_s_kg_m3": 2750.0, "cp_s_J_kgK":  850.0, "lambda_s_W_mK": 3.0},
+    ],
+    # ------------------------------------------------------------------
+    # SONDEN-GEOMETRIE  (vereinheitlicht mit der 2D-Übung)
+    # ------------------------------------------------------------------
+    # Sondenkopf-/Sondenfuß-Tiefe gemessen VON DER OBERFLÄCHE NACH UNTEN.
+    # Die Sonde kann mehrere Schichten durchstoßen. Jede Sonde wird als
+    # kleine Box (borehole_dx_m × borehole_dy_m) modelliert.
+    "borehole": {
+        "depth_top_m":     7.0,    # Sondenkopf, Tiefe unter Oberfläche [m]
+        "depth_bottom_m": 83.0,    # Sondenfuß,  Tiefe unter Oberfläche [m]
+        "borehole_dx_m":   0.6,    # Sondenbox-Ausdehnung x [m]
+        "borehole_dy_m":   0.6,    # Sondenbox-Ausdehnung y [m]
     },
     "field": {
         # Sondenfeld – entweder N x N Raster (n_x, n_y, spacing_m) ODER
@@ -68,12 +96,6 @@ CONFIG: dict = {
         "n_y":           3,
         "spacing_m":     5.0,
         "positions":     None,        # bei nicht-None überschreibt es das Raster
-        # Tiefe je Sonde: top_offset bis bottom_offset (gemessen vom Top der borehole_zone)
-        "top_offset_m":     2.0,
-        "bottom_offset_m":  2.0,
-        # Sonden als kleine Boxen modelliert (anstatt 1D Linien)
-        "borehole_dx_m":    0.6,
-        "borehole_dy_m":    0.6,
     },
     "mesh": {
         "size_in_borehole_m":    0.4,
@@ -81,16 +103,6 @@ CONFIG: dict = {
         "size_far_m":           15.0,
         "field_size_radius_m":   8.0,    # bis hier feinmaschig
         "field_size_radius_far_m": 30.0,
-    },
-    "materials": {
-        # Bodenmaterial (z. B. Lockergestein / Festgestein)
-        "soil": {
-            "permeability_m2":  1.0e-18,   # quasi impermeabel
-            "porosity":          0.20,
-            "rho_s_kg_m3":    2700.0,
-            "cp_s_J_kgK":      900.0,
-            "lambda_s_W_mK":     2.5,
-        },
     },
     "fluid": {
         # Porenfluid (Wasser) — auch wenn k klein ist, brauchen wir die Phase
@@ -108,6 +120,10 @@ CONFIG: dict = {
     "initial": {
         "T_K":  283.15,
         "p_Pa": 0.0,
+        # Optionaler geothermischer Gradient (wie in der 2D-Übung). Bei
+        # geothermal_gradient_K_per_m > 0 wird T0(z) tiefen­abhängig gesetzt.
+        "T_surface_K":                 283.15,
+        "geothermal_gradient_K_per_m": 0.0,    # 0.03 für realistischen Gradient
     },
     "operation": {
         # Heat-Source je Sonde: Leistung [W] (positiv = Beladung)
@@ -127,11 +143,6 @@ CONFIG: dict = {
     #
     # Periode T_Zyklus = charge + storage_after_charge + discharge + storage_after_discharge
     # Gesamt­simulations­zeit = n_cycles * T_Zyklus
-    #
-    # Beispiele:
-    #   - Saisonal (1 Jahr/Zyklus): 91.25 / 91.25 / 91.25 / 91.25
-    #   - Sommerladung 120 d, Winterförderung 120 d, sonst Pause: 120 / 60 / 120 / 60
-    #   - Phase auf 0 setzen, um sie zu deaktivieren.
     # ------------------------------------------------------------------
     "cycles": {
         "n_cycles":                        1,       # Anzahl Wiederholungen des Zyklus
@@ -163,6 +174,37 @@ CONFIG: dict = {
 DAY = 86400.0
 
 
+def _layer_stack(cfg: dict):
+    """Schichtliste von OBEN nach UNTEN (wie in cfg) in z-Grenzen umrechnen.
+    Rückgabe: (layers_bottom_up, z_top), wobei jede Schicht zusätzlich
+    {z_low, z_high} trägt und z_top die Oberfläche ist.
+    """
+    z_base = cfg["domain"].get("z_base_m", 0.0)
+    bot_up = list(reversed(list(cfg["layers"])))  # bottom → top
+    z = z_base
+    out = []
+    for L in bot_up:
+        z_low = z
+        z_high = z + float(L["thickness_m"])
+        out.append({**L, "z_low": z_low, "z_high": z_high})
+        z = z_high
+    return out, z
+
+
+def _borehole_positions(cfg: dict) -> list[tuple[float, float]]:
+    custom = cfg["field"].get("positions")
+    if custom:
+        return [(float(x), float(y)) for x, y in custom]
+    nx = cfg["field"]["n_x"]; ny = cfg["field"]["n_y"]; s = cfg["field"]["spacing_m"]
+    x0_f = -(nx - 1) * s / 2.0
+    y0_f = -(ny - 1) * s / 2.0
+    return [(x0_f + ix * s, y0_f + iy * s) for ix in range(nx) for iy in range(ny)]
+
+
+def _n_boreholes(cfg: dict) -> int:
+    return len(_borehole_positions(cfg))
+
+
 # ======================================================================
 #  Mesh — gmsh
 # ======================================================================
@@ -172,32 +214,22 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     Lx = cfg["domain"]["size_x_m"]
     Ly = cfg["domain"]["size_y_m"]
     z_base = cfg["domain"]["z_base_m"]
+    layers, z_top = _layer_stack(cfg)
 
-    t_bot   = cfg["layers"]["soil_bottom_thickness_m"]
-    t_zone  = cfg["layers"]["borehole_zone_thickness_m"]
-    t_cover = cfg["layers"]["soil_cover_thickness_m"]
-
-    z_zone_bot = z_base + t_bot
-    z_zone_top = z_zone_bot + t_zone
-    z_top      = z_zone_top + t_cover
-
-    dx_b = cfg["field"]["borehole_dx_m"]
-    dy_b = cfg["field"]["borehole_dy_m"]
-    z_bh_bot = z_zone_bot + cfg["field"]["bottom_offset_m"]
-    z_bh_top = z_zone_top - cfg["field"]["top_offset_m"]
+    # Sonde: Tiefe von der Oberfläche nach unten
+    dx_b = cfg["borehole"]["borehole_dx_m"]
+    dy_b = cfg["borehole"]["borehole_dy_m"]
+    depth_top    = cfg["borehole"]["depth_top_m"]
+    depth_bottom = cfg["borehole"]["depth_bottom_m"]
+    z_bh_top = z_top - depth_top
+    z_bh_bot = z_top - depth_bottom
     h_bh = z_bh_top - z_bh_bot
+    if h_bh <= 0:
+        raise ValueError(f"borehole.depth_bottom_m ({depth_bottom}) muss > depth_top_m ({depth_top}) sein.")
+    if z_bh_bot < z_base - 1e-9 or z_bh_top > z_top + 1e-9:
+        raise ValueError("Sondentiefe liegt außerhalb der Schichtdomäne.")
 
-    custom = cfg["field"].get("positions")
-    if custom:
-        bh_positions: list[tuple[float, float]] = [(float(x), float(y)) for x, y in custom]
-    else:
-        nx = cfg["field"]["n_x"]; ny = cfg["field"]["n_y"]; s = cfg["field"]["spacing_m"]
-        bh_positions = []
-        x0_f = -(nx - 1) * s / 2.0
-        y0_f = -(ny - 1) * s / 2.0
-        for ix in range(nx):
-            for iy in range(ny):
-                bh_positions.append((x0_f + ix * s, y0_f + iy * s))
+    bh_positions = _borehole_positions(cfg)
 
     s_in   = cfg["mesh"]["size_in_borehole_m"]
     s_near = cfg["mesh"]["size_near_field_m"]
@@ -210,9 +242,12 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     gmsh.model.add("btes")
 
     x0, y0 = -Lx / 2.0, -Ly / 2.0
-    box_bot   = gmsh.model.occ.addBox(x0, y0, z_base,     Lx, Ly, t_bot)
-    box_zone  = gmsh.model.occ.addBox(x0, y0, z_zone_bot, Lx, Ly, t_zone)
-    box_cover = gmsh.model.occ.addBox(x0, y0, z_zone_top, Lx, Ly, t_cover)
+
+    # Eine Box pro Schicht (von unten nach oben)
+    layer_boxes = []
+    for L in layers:
+        b = gmsh.model.occ.addBox(x0, y0, L["z_low"], Lx, Ly, L["z_high"] - L["z_low"])
+        layer_boxes.append(b)
 
     bh_boxes = []
     for x, y in bh_positions:
@@ -221,61 +256,67 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
         bh_boxes.append(b)
 
     gmsh.model.occ.fragment(
-        [(3, box_bot)],
-        [(3, box_zone), (3, box_cover)] + [(3, b) for b in bh_boxes],
+        [(3, layer_boxes[0])],
+        [(3, b) for b in layer_boxes[1:]] + [(3, b) for b in bh_boxes],
     )
     gmsh.model.occ.synchronize()
 
-    vol_soil, vol_bh = [], []
+    # Klassifikation der entstehenden Volumen:
+    #  - kleine Grundfläche im Sonden-z-Bereich  -> Sondenstück (nach (x,y) gruppiert)
+    #  - sonst                                    -> Bodenschicht (nach z-Mitte)
+    bh_pos = np.array(bh_positions)
+    vol_bh = {i: [] for i in range(len(bh_positions))}   # borehole index -> [tags]
+    vol_layer = {i: [] for i in range(len(layers))}      # layer index    -> [tags]
     for dim, tag in gmsh.model.getEntities(3):
         xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(dim, tag)
         ext = xmax - xmin
         zc = 0.5 * (zmin + zmax)
+        xc = 0.5 * (xmin + xmax); yc = 0.5 * (ymin + ymax)
         small = ext < 0.3 * Lx
         if small and (z_bh_bot - 1e-3) <= zc <= (z_bh_top + 1e-3):
-            vol_bh.append((tag, 0.5 * (xmin + xmax), 0.5 * (ymin + ymax)))
+            d = np.hypot(bh_pos[:, 0] - xc, bh_pos[:, 1] - yc)
+            vol_bh[int(np.argmin(d))].append(tag)
         else:
-            vol_soil.append(tag)
-    if len(vol_bh) != len(bh_positions):
-        raise RuntimeError(f"Erwartet {len(bh_positions)} Sonden, gefunden {len(vol_bh)}")
-
-    # Sortiere Sonden-Volumen nach (x, y) — stabile Zuordnung zur Position
-    vol_bh.sort(key=lambda t: (t[1], t[2]))
-    vol_bh_tags = [t[0] for t in vol_bh]
+            for i, L in enumerate(layers):
+                if L["z_low"] - 1e-6 <= zc <= L["z_high"] + 1e-6:
+                    vol_layer[i].append(tag); break
+    missing = [i for i, t in vol_bh.items() if not t]
+    if missing:
+        raise RuntimeError(f"Sonden ohne Volumen gefunden (Index {missing}).")
 
     # Außenflächen
-    surf_top, surf_bot, surf_lat_zone = [], [], []
+    surf_top, surf_bot, surf_lat = [], [], []
     for dim, tag in gmsh.model.getEntities(2):
         xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(dim, tag)
         zc = 0.5 * (zmin + zmax)
         if (xmax - xmin) >= 0.9 * Lx and abs(zc - z_top) < 1e-6:
-            surf_top.append(tag)
-            continue
+            surf_top.append(tag); continue
         if (xmax - xmin) >= 0.9 * Lx and abs(zc - z_base) < 1e-6:
-            surf_bot.append(tag)
-            continue
-        # Lateral der "borehole_zone"
+            surf_bot.append(tag); continue
         on_outer = (abs(xmin - x0) < 1e-6 and abs(xmax - x0) < 1e-6) \
                    or (abs(xmin - (x0 + Lx)) < 1e-6 and abs(xmax - (x0 + Lx)) < 1e-6) \
                    or (abs(ymin - y0) < 1e-6 and abs(ymax - y0) < 1e-6) \
                    or (abs(ymin - (y0 + Ly)) < 1e-6 and abs(ymax - (y0 + Ly)) < 1e-6)
-        in_zone_z = (zmin >= z_zone_bot - 1e-6) and (zmax <= z_zone_top + 1e-6)
-        if on_outer and in_zone_z:
-            surf_lat_zone.append(tag)
+        if on_outer:
+            surf_lat.append(tag)
 
-    # Physical groups – fortlaufende Tags für Volumen, damit msh2vtu reindex
-    # zusammenhängende MaterialIDs 0..N produziert
-    gmsh.model.addPhysicalGroup(3, vol_soil, tag=1, name="soil")
-    for i, tag in enumerate(vol_bh_tags):
-        gmsh.model.addPhysicalGroup(3, [tag], tag=2 + i, name=f"bh_{i:02d}")
-    gmsh.model.addPhysicalGroup(2, surf_top,       tag=100, name="top")
-    gmsh.model.addPhysicalGroup(2, surf_bot,       tag=101, name="bottom")
-    if surf_lat_zone:
-        gmsh.model.addPhysicalGroup(2, surf_lat_zone, tag=102, name="lateral_zone")
+    # Physical groups – fortlaufende Tags: erst Schichten (unten→oben),
+    # dann Sonden, damit msh2vtu reindex MaterialIDs 0..(L-1) für die
+    # Schichten und L..(L+N-1) für die Sonden vergibt.
+    pg = 1
+    for i, L in enumerate(layers):
+        gmsh.model.addPhysicalGroup(3, vol_layer[i], tag=pg, name=L["name"]); pg += 1
+    for i in range(len(bh_positions)):
+        gmsh.model.addPhysicalGroup(3, vol_bh[i], tag=pg, name=f"bh_{i:02d}"); pg += 1
+    gmsh.model.addPhysicalGroup(2, surf_top, tag=100, name="top")
+    gmsh.model.addPhysicalGroup(2, surf_bot, tag=101, name="bottom")
+    if surf_lat:
+        gmsh.model.addPhysicalGroup(2, surf_lat, tag=102, name="lateral")
 
     # Mesh-Größenfeld: feiner um Sondenfeld
+    all_bh_tags = [t for tags in vol_bh.values() for t in tags]
     bh_surfaces = []
-    for tag in vol_bh_tags:
+    for tag in all_bh_tags:
         for d, t in gmsh.model.getBoundary([(3, tag)], oriented=False):
             if d == 2:
                 bh_surfaces.append(abs(t))
@@ -290,7 +331,7 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     gmsh.model.mesh.field.setAsBackgroundMesh(f_thr)
 
     bh_points = []
-    for tag in vol_bh_tags:
+    for tag in all_bh_tags:
         for d, t in gmsh.model.getBoundary([(3, tag)], recursive=True, oriented=False):
             if d == 0:
                 bh_points.append((d, t))
@@ -308,26 +349,28 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     return msh_path
 
 
-def _n_boreholes(cfg: dict) -> int:
-    custom = cfg["field"].get("positions")
-    return len(custom) if custom else cfg["field"]["n_x"] * cfg["field"]["n_y"]
+def _mesh_files(cfg: dict) -> dict:
+    prefix = cfg["output"]["prefix"]
+    n_bh = _n_boreholes(cfg)
+    files = {
+        "domain":  f"{prefix}_domain.vtu",
+        "top":     f"{prefix}_physical_group_top.vtu",
+        "bottom":  f"{prefix}_physical_group_bottom.vtu",
+        "lateral": f"{prefix}_physical_group_lateral.vtu",
+        "_n_bh":   n_bh,
+    }
+    for L in cfg["layers"]:
+        files[L["name"]] = f"{prefix}_physical_group_{L['name']}.vtu"
+    for i in range(n_bh):
+        files[f"bh_{i:02d}"] = f"{prefix}_physical_group_bh_{i:02d}.vtu"
+    return files
 
 
 def convert_mesh(cfg: dict, msh_path: Path, out_dir: Path) -> dict:
-    pass  # msh2vtu provided at module level
     prefix = cfg["output"]["prefix"]
     msh2vtu(filename=msh_path, output_path=out_dir, output_prefix=prefix,
             dim=3, reindex=True, log_level="WARNING")
-    n_bh = _n_boreholes(cfg)
-    bh_meshes = {f"bh_{i:02d}": f"{prefix}_physical_group_bh_{i:02d}.vtu" for i in range(n_bh)}
-    return {
-        "domain":       f"{prefix}_domain.vtu",
-        "top":          f"{prefix}_physical_group_top.vtu",
-        "bottom":       f"{prefix}_physical_group_bottom.vtu",
-        "lateral_zone": f"{prefix}_physical_group_lateral_zone.vtu",
-        **bh_meshes,
-        "_n_bh":        n_bh,
-    }
+    return _mesh_files(cfg)
 
 
 # ======================================================================
@@ -342,7 +385,6 @@ def build_cycle_curves(cfg: dict) -> dict:
     t_sd  = cfg["cycles"]["storage_after_discharge_days"] * DAY
     ramp  = max(60.0, cfg["cycles"]["ramp_days"] * DAY)
 
-    # Phasen: (Dauer, q-Skalierung)
     phases = [
         ("charge",          t_c,  +1.0),
         ("storage_after_c", t_sc,  0.0),
@@ -464,23 +506,22 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict, curves: dict) -> Path:
     op     = cfg["operation"]
     init   = cfg["initial"]
     sol    = cfg["solver"]
+    disp   = cfg["dispersion"]
 
     # Wärmequelle pro Volumen [W/m³] je Sonde
-    h_bh = (cfg["layers"]["borehole_zone_thickness_m"]
-            - cfg["field"]["top_offset_m"] - cfg["field"]["bottom_offset_m"])
-    V_bh = cfg["field"]["borehole_dx_m"] * cfg["field"]["borehole_dy_m"] * h_bh
+    h_bh = cfg["borehole"]["depth_bottom_m"] - cfg["borehole"]["depth_top_m"]
+    V_bh = cfg["borehole"]["borehole_dx_m"] * cfg["borehole"]["borehole_dy_m"] * h_bh
     q_v = op["power_per_borehole_W"] / V_bh
 
     root = ET.Element("OpenGeoSysProject")
 
     meshes = _se(root, "meshes")
-    _se(meshes, "mesh", mesh_files["domain"])
-    _se(meshes, "mesh", mesh_files["top"])
-    _se(meshes, "mesh", mesh_files["bottom"])
-    if mesh_files.get("lateral_zone"):
-        _se(meshes, "mesh", mesh_files["lateral_zone"])
-    for i in range(mesh_files["_n_bh"]):
-        _se(meshes, "mesh", mesh_files[f"bh_{i:02d}"])
+    mesh_keys = ["domain", "top", "bottom", "lateral"]
+    mesh_keys += [L["name"] for L in cfg["layers"]]
+    mesh_keys += [f"bh_{i:02d}" for i in range(mesh_files["_n_bh"])]
+    for key in mesh_keys:
+        if mesh_files.get(key):
+            _se(meshes, "mesh", mesh_files[key])
 
     # Process
     processes = _se(root, "processes")
@@ -491,14 +532,17 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict, curves: dict) -> Path:
     _se(sv, "secondary_variable", internal_name="darcy_velocity", output_name="darcy_velocity")
     _se(proc, "specific_body_force", "0 0 0")
 
-    # Media: alle Subdomänen erhalten gleiches Soil-Material
-    # MaterialIDs nach msh2vtu reindex: soil=0, bh_00=1, bh_01=2, ...
+    # Media: MaterialID-Reihenfolge nach msh2vtu-Reindex = erst Schichten
+    # (unten→oben, passend zu build_mesh), dann Sonden.
     media = _se(root, "media")
-    soil = cfg["materials"]["soil"]
-    disp = cfg["dispersion"]
-    _add_medium(media, 0, soil, fluid, op, disp)
+    layers_bot_up = list(reversed(cfg["layers"]))   # passend zu mesh-Tags
+    for mid, L in enumerate(layers_bot_up):
+        _add_medium(media, mid, L, fluid, op, disp)
+    # Sondenmaterial = mittlere Schicht (didaktische Voreinstellung; hier
+    # könnte auch ein „Filterkies"-Material hinterlegt werden).
+    bh_mat = layers_bot_up[len(layers_bot_up) // 2]
     for i in range(mesh_files["_n_bh"]):
-        _add_medium(media, i + 1, soil, fluid, op, disp)
+        _add_medium(media, len(layers_bot_up) + i, bh_mat, fluid, op, disp)
 
     # Time loop
     tl = _se(root, "time_loop")
@@ -528,7 +572,18 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict, curves: dict) -> Path:
 
     # Parameters
     params = _se(root, "parameters")
-    _const_param(params, "T0",   init["T_K"])
+    # T0: konstant oder tiefen­abhängig (geothermischer Gradient)
+    gradient = init.get("geothermal_gradient_K_per_m", 0.0)
+    if abs(gradient) > 1e-12:
+        T_surf = init.get("T_surface_K", init["T_K"])
+        z_tot  = sum(L["thickness_m"] for L in cfg["layers"])
+        p_el = _se(params, "parameter")
+        _se(p_el, "name", "T0")
+        _se(p_el, "type", "Function")
+        # Tiefe = z_total - z;  T0 = T_surf + gradient · Tiefe
+        _se(p_el, "expression", f"{T_surf} + ({gradient:.6g})*({z_tot} - z)")
+    else:
+        _const_param(params, "T0", init["T_K"])
     _const_param(params, "p0",   init["p_Pa"])
     _const_param(params, "q_v_amp", q_v)
     _curve_scaled_param(params, "q_v_borehole", "cycle_q", "q_v_amp")
@@ -619,15 +674,7 @@ def main() -> int:
         print("[2/3] msh2vtu: Konvertierung ...")
         mesh_files = convert_mesh(CONFIG, msh_path, out_dir)
     else:
-        n_bh = _n_boreholes(CONFIG)
-        mesh_files = {
-            "domain":       f"{prefix}_domain.vtu",
-            "top":          f"{prefix}_physical_group_top.vtu",
-            "bottom":       f"{prefix}_physical_group_bottom.vtu",
-            "lateral_zone": f"{prefix}_physical_group_lateral_zone.vtu",
-            "_n_bh":        n_bh,
-            **{f"bh_{i:02d}": f"{prefix}_physical_group_bh_{i:02d}.vtu" for i in range(n_bh)},
-        }
+        mesh_files = _mesh_files(CONFIG)
 
     print("[3/3] OGS-Projektdatei ...")
     curves = build_cycle_curves(CONFIG)

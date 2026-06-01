@@ -3,10 +3,11 @@
 """
 BTES 3D — Variante mit OpenGeoSys-Modul HEAT_TRANSPORT_BHE.
 
-STATUS: SKIZZE. Mesh- und PRJ-Generierung sind implementiert, ein
-end-to-end-OGS-Lauf ist noch nicht validiert. Vor produktivem Einsatz
-gegen die OGS-Benchmarks "BHE_1U" / "BHE_2U" / "BHE_CXA_CXC"
-gegenprüfen.
+STATUS: Lauffähig. Mesh-/PRJ-Generierung und ein end-to-end-OGS-Lauf
+sind mit der Default-Konfiguration (3x3-Feld, Typ 1U, ein Lade-/Entlade-
+Zyklus -> 53 Zeitschritte) verifiziert. Quantitativ noch NICHT validiert:
+vor produktivem Einsatz gegen die OGS-Benchmarks "BHE_1U" / "BHE_2U" /
+"BHE_CXA_CXC" gegenprüfen.
 
 Unterschiede zur Variante `btes_3d.py` (vereinfachte HT-Volumen­quelle):
 
@@ -55,10 +56,27 @@ CONFIG: dict = {
         "size_y_m":  80.0,
         "z_base_m":   0.0,
     },
-    "layers": {
-        "soil_cover_thickness_m":     5.0,
-        "borehole_zone_thickness_m": 80.0,
-        "soil_bottom_thickness_m":   30.0,
+    # Schichten (von OBEN nach UNTEN) — vereinheitlicht mit btes_radial_2d.py
+    # und btes_3d.py. Das Boden-Mesh ist echt geschichtet (jede Schicht eine
+    # eigene MaterialID). Die eingebetteten 1D-BHE-Linien werden beim
+    # Fragmentieren an den Schichtgrenzen geteilt; quert eine BHE mehrere
+    # Schichten, nutzt ihr 1D-Element die mittlere Schicht als repräsentatives
+    # umgebendes Material.
+    "layers": [
+        {"name": "cover",    "thickness_m":  5.0,
+         "permeability_m2": 1.0e-15, "porosity": 0.35,
+         "rho_s_kg_m3": 1900.0, "cp_s_J_kgK": 1500.0, "lambda_s_W_mK": 1.4},
+        {"name": "bedrock",  "thickness_m": 80.0,
+         "permeability_m2": 1.0e-18, "porosity": 0.20,
+         "rho_s_kg_m3": 2700.0, "cp_s_J_kgK":  900.0, "lambda_s_W_mK": 2.5},
+        {"name": "basement", "thickness_m": 30.0,
+         "permeability_m2": 1.0e-19, "porosity": 0.10,
+         "rho_s_kg_m3": 2750.0, "cp_s_J_kgK":  850.0, "lambda_s_W_mK": 3.0},
+    ],
+    # Sonde: Tiefe von der Oberfläche nach unten (wie in den anderen Übungen)
+    "borehole": {
+        "depth_top_m":     7.0,           # Sondenkopf, Tiefe unter Oberfläche [m]
+        "depth_bottom_m": 82.0,           # Sondenfuß,  Tiefe unter Oberfläche [m]
     },
     "field": {
         # Sondenfeld — N x N Raster ODER explizite Positionsliste
@@ -66,9 +84,6 @@ CONFIG: dict = {
         "n_y":           3,
         "spacing_m":     5.0,
         "positions":     None,            # bei nicht-None überschreibt es das Raster
-        # Sondentiefe — von der Oberfläche nach unten gemessen
-        "depth_top_m":     7.0,           # Sondenkopf [m]
-        "depth_bottom_m": 82.0,           # Sondenfuß  [m]
     },
     "mesh": {
         "size_in_borehole_m":      0.4,
@@ -76,15 +91,6 @@ CONFIG: dict = {
         "size_far_m":             15.0,
         "field_size_radius_m":     8.0,
         "field_size_radius_far_m": 30.0,
-    },
-    "materials": {
-        "soil": {
-            "permeability_m2":  1.0e-18,
-            "porosity":          0.20,
-            "rho_s_kg_m3":    2700.0,
-            "cp_s_J_kgK":      900.0,
-            "lambda_s_W_mK":     2.5,
-        },
     },
     "fluid": {
         "rho_ref_kg_m3":  1000.0,
@@ -185,10 +191,22 @@ def _bhe_positions(cfg: dict) -> list[tuple[float, float]]:
 def _z_for_depth(cfg: dict, depth: float) -> float:
     """Interner z-Wert für eine Tiefe (gemessen von der Oberfläche)."""
     z_base = cfg["domain"]["z_base_m"]
-    z_top  = (z_base + cfg["layers"]["soil_bottom_thickness_m"]
-              + cfg["layers"]["borehole_zone_thickness_m"]
-              + cfg["layers"]["soil_cover_thickness_m"])
+    z_top  = z_base + sum(float(L["thickness_m"]) for L in cfg["layers"])
     return z_top - depth
+
+
+def _layer_stack(cfg: dict):
+    """Schichtliste (CONFIG: oben→unten) in z-Grenzen umrechnen.
+    Rückgabe: (layers_bottom_up mit z_low/z_high, z_top)."""
+    z_base = cfg["domain"].get("z_base_m", 0.0)
+    bot_up = list(reversed(list(cfg["layers"])))
+    z = z_base
+    out = []
+    for L in bot_up:
+        h = float(L["thickness_m"])
+        out.append({**L, "z_low": z, "z_high": z + h})
+        z += h
+    return out, z
 
 
 # ======================================================================
@@ -199,42 +217,91 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     Lx = cfg["domain"]["size_x_m"]
     Ly = cfg["domain"]["size_y_m"]
     z_base = cfg["domain"]["z_base_m"]
-    t_bot   = cfg["layers"]["soil_bottom_thickness_m"]
-    t_zone  = cfg["layers"]["borehole_zone_thickness_m"]
-    t_cover = cfg["layers"]["soil_cover_thickness_m"]
-    z_top   = z_base + t_bot + t_zone + t_cover
+    layers, z_top = _layer_stack(cfg)
 
     bhe_pos = _bhe_positions(cfg)
-    z_bhe_top = _z_for_depth(cfg, cfg["field"]["depth_top_m"])
-    z_bhe_bot = _z_for_depth(cfg, cfg["field"]["depth_bottom_m"])
-
+    z_bhe_top = z_top - cfg["borehole"]["depth_top_m"]
+    z_bhe_bot = z_top - cfg["borehole"]["depth_bottom_m"]
     m = cfg["mesh"]
+    x0, y0 = -Lx / 2.0, -Ly / 2.0
 
     gmsh.initialize()
     gmsh.option.setNumber("General.Terminal", 0)
     gmsh.model.add("btes_3d_bhe")
 
-    # 3D-Boden­volumen
-    box = gmsh.model.occ.addBox(-Lx/2, -Ly/2, z_base, Lx, Ly, z_top - z_base)
-    gmsh.model.occ.synchronize()
-
-    # Eine 1D-Linie pro BHE
-    bhe_lines = []
+    # Eine Box pro Schicht + eine 1D-Linie pro BHE. Das gemeinsame
+    # Fragmentieren macht die Schichten konform UND imprintet die Linien
+    # als interne Kanten (an den Schichtgrenzen geteilt) in die Volumen —
+    # die Mesh-Knoten sitzen damit exakt auf den BHE-Achsen.
+    layer_boxes = [gmsh.model.occ.addBox(x0, y0, L["z_low"], Lx, Ly,
+                                         L["z_high"] - L["z_low"]) for L in layers]
+    lines = []
     for x, y in bhe_pos:
-        p_top = gmsh.model.occ.addPoint(x, y, z_bhe_top, m["size_in_borehole_m"])
-        p_bot = gmsh.model.occ.addPoint(x, y, z_bhe_bot, m["size_in_borehole_m"])
-        ln    = gmsh.model.occ.addLine(p_top, p_bot)
-        bhe_lines.append(ln)
+        p_top = gmsh.model.occ.addPoint(x, y, z_bhe_top)
+        p_bot = gmsh.model.occ.addPoint(x, y, z_bhe_bot)
+        lines.append(gmsh.model.occ.addLine(p_top, p_bot))
+    gmsh.model.occ.fragment([(3, b) for b in layer_boxes], [(1, l) for l in lines])
     gmsh.model.occ.synchronize()
 
-    # Linien in Volumen einbetten — sorgt dafür, dass Mesh-Knoten
-    # exakt auf BHE-Achsen sitzen und gemeinsam vernetzt werden.
-    gmsh.model.mesh.embed(1, bhe_lines, 3, box)
+    # Schichtvolumen nach z-Mitte zuordnen
+    vol_layer = {i: [] for i in range(len(layers))}
+    for dim, tag in gmsh.model.getEntities(3):
+        bb = gmsh.model.occ.getBoundingBox(dim, tag)
+        zc = 0.5 * (bb[2] + bb[5])
+        for i, L in enumerate(layers):
+            if L["z_low"] - 1e-6 <= zc <= L["z_high"] + 1e-6:
+                vol_layer[i].append(tag); break
 
-    # Mesh-Verfeinerung: fein um BHE-Linien, mittel im Feld-Nahbereich,
-    # grob im Fernfeld.
+    # BHE-Liniensegmente (an Schichtgrenzen geteilt) nach (x,y) gruppieren
+    pos = np.array(bhe_pos)
+    seg_bhe = {i: [] for i in range(len(bhe_pos))}
+    all_segs = []
+    for dim, tag in gmsh.model.getEntities(1):
+        bb = gmsh.model.occ.getBoundingBox(dim, tag)
+        dx, dy, dz = bb[3] - bb[0], bb[4] - bb[1], bb[5] - bb[2]
+        xc, yc, zc = 0.5*(bb[0]+bb[3]), 0.5*(bb[1]+bb[4]), 0.5*(bb[2]+bb[5])
+        vertical = dx < 1e-6 and dy < 1e-6 and dz > 1e-9
+        if vertical and (z_bhe_bot - 1e-3) <= zc <= (z_bhe_top + 1e-3):
+            d = np.hypot(pos[:, 0] - xc, pos[:, 1] - yc)
+            j = int(np.argmin(d))
+            if d[j] < 1e-3:
+                seg_bhe[j].append(tag); all_segs.append(tag)
+    missing = [i for i, s in seg_bhe.items() if not s]
+    if missing:
+        raise RuntimeError(f"BHE ohne Liniensegment gefunden: {missing}")
+
+    # Physical Groups: Schichten (unten→oben) -> MaterialID 0..L-1,
+    # danach BHE-Linien -> MaterialID L..L+N-1
+    pg = 1
+    for i, L in enumerate(layers):
+        gmsh.model.addPhysicalGroup(3, vol_layer[i], tag=pg, name=L["name"]); pg += 1
+    for i in range(len(bhe_pos)):
+        gmsh.model.addPhysicalGroup(1, seg_bhe[i], tag=pg, name=f"bhe_{i:02d}"); pg += 1
+
+    # Domänenränder
+    top_faces, bot_faces, lat_faces = [], [], []
+    for dim, tag in gmsh.model.getEntities(2):
+        bb = gmsh.model.occ.getBoundingBox(dim, tag)
+        zc = 0.5 * (bb[2] + bb[5])
+        if (bb[3] - bb[0]) >= 0.9 * Lx and abs(zc - z_top) < 1e-6:
+            top_faces.append(tag)
+        elif (bb[3] - bb[0]) >= 0.9 * Lx and abs(zc - z_base) < 1e-6:
+            bot_faces.append(tag)
+        else:
+            on_outer = (abs(bb[0]-x0) < 1e-6 and abs(bb[3]-x0) < 1e-6) \
+                       or (abs(bb[0]-(x0+Lx)) < 1e-6 and abs(bb[3]-(x0+Lx)) < 1e-6) \
+                       or (abs(bb[1]-y0) < 1e-6 and abs(bb[4]-y0) < 1e-6) \
+                       or (abs(bb[1]-(y0+Ly)) < 1e-6 and abs(bb[4]-(y0+Ly)) < 1e-6)
+            if on_outer:
+                lat_faces.append(tag)
+    gmsh.model.addPhysicalGroup(2, top_faces, tag=200, name="top")
+    gmsh.model.addPhysicalGroup(2, bot_faces, tag=201, name="bottom")
+    if lat_faces:
+        gmsh.model.addPhysicalGroup(2, lat_faces, tag=202, name="lateral")
+
+    # Verfeinerung um die BHE-Linien
     f_dist = gmsh.model.mesh.field.add("Distance")
-    gmsh.model.mesh.field.setNumbers(f_dist, "CurvesList", bhe_lines)
+    gmsh.model.mesh.field.setNumbers(f_dist, "CurvesList", all_segs)
     f_thr = gmsh.model.mesh.field.add("Threshold")
     gmsh.model.mesh.field.setNumber(f_thr, "InField",  f_dist)
     gmsh.model.mesh.field.setNumber(f_thr, "SizeMin",  m["size_near_field_m"])
@@ -242,24 +309,16 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     gmsh.model.mesh.field.setNumber(f_thr, "DistMin",  m["field_size_radius_m"])
     gmsh.model.mesh.field.setNumber(f_thr, "DistMax",  m["field_size_radius_far_m"])
     gmsh.model.mesh.field.setAsBackgroundMesh(f_thr)
+    bhe_pts = []
+    for tag in all_segs:
+        for d, t in gmsh.model.getBoundary([(1, tag)], oriented=False):
+            if d == 0:
+                bhe_pts.append((0, t))
+    if bhe_pts:
+        gmsh.model.mesh.setSize(list(set(bhe_pts)), m["size_in_borehole_m"])
 
-    # Physical Groups: Boden = ID 0, jede BHE-Linie eine eigene ID
-    gmsh.model.addPhysicalGroup(3, [box], tag=1, name="soil")
-    for i, ln in enumerate(bhe_lines):
-        gmsh.model.addPhysicalGroup(1, [ln], tag=10 + i, name=f"bhe_{i:02d}")
-
-    # Domänen­ränder als Physical-Faces
-    surfs = gmsh.model.getEntities(2)
-    top_faces, bot_faces, lat_faces = [], [], []
-    for dim, tag in surfs:
-        xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(dim, tag)
-        if abs(zmin - z_top) < 1e-6:  top_faces.append(tag)
-        elif abs(zmax - z_base) < 1e-6: bot_faces.append(tag)
-        else:                          lat_faces.append(tag)
-    gmsh.model.addPhysicalGroup(2, top_faces, tag=200, name="top")
-    gmsh.model.addPhysicalGroup(2, bot_faces, tag=201, name="bottom")
-    gmsh.model.addPhysicalGroup(2, lat_faces, tag=202, name="lateral")
-
+    gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 1)
+    gmsh.option.setNumber("Mesh.MeshSizeExtendFromBoundary", 0)
     gmsh.option.setNumber("Mesh.MshFileVersion", 2.2)
     gmsh.model.mesh.generate(3)
     gmsh.write(str(msh_path))
@@ -290,7 +349,7 @@ def _indent(elem, level=0):
 def _bhe_xml(parent, cfg: dict, n_bhe: int) -> None:
     """Erzeugt <borehole_heat_exchangers>-Block für N gleichartige BHEs."""
     bhe = cfg["bhe"]
-    L_bhe = cfg["field"]["depth_bottom_m"] - cfg["field"]["depth_top_m"]
+    L_bhe = cfg["borehole"]["depth_bottom_m"] - cfg["borehole"]["depth_top_m"]
     bhes = _se(parent, "borehole_heat_exchangers")
     for i in range(n_bhe):
         b = _se(bhes, "borehole_heat_exchanger")
@@ -300,7 +359,11 @@ def _bhe_xml(parent, cfg: dict, n_bhe: int) -> None:
         _se(ftc, "type", bhe["control"]["type"])
         if bhe["control"]["type"] == "FixedPowerConstantFlow":
             _se(ftc, "power",     bhe["control"]["power_W"])
-            _se(ftc, "flow_rate", bhe["control"]["flow_rate_kg_s"])
+            # OGS erwartet einen VOLUMETRISCHEN Durchfluss [m^3/s], nicht kg/s.
+            # Umrechnung ueber die Refrigerant-Dichte (sonst ~1000x zu hoch ->
+            # Refrigerant-DeltaT ~ 0 -> keine Waermekopplung).
+            _flow_vol = bhe["control"]["flow_rate_kg_s"] / bhe["refrigerant"]["density_kg_m3"]
+            _se(ftc, "flow_rate", _flow_vol)
         # Bohrloch
         bh = _se(b, "borehole")
         _se(bh, "length",   L_bhe)
@@ -359,8 +422,13 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict) -> Path:
 
     # Media — Boden + ein Material pro BHE (Identifizierung über Mesh-MaterialID)
     media = _se(root, "media")
-    soil  = cfg["materials"]["soil"]
-    for mid in range(n_bhe + 1):
+    # MaterialIDs nach msh2vtu-Reindex: erst Schichten (unten→oben) -> 0..L-1,
+    # dann BHE-Linien -> L..L+N-1. BHE-Linien queren mehrere Schichten und
+    # bekommen die mittlere Schicht als repräsentatives umgebendes Material.
+    layers_bot_up = list(reversed(cfg["layers"]))
+    bh_mat = layers_bot_up[len(layers_bot_up) // 2]
+    mats = layers_bot_up + [bh_mat] * n_bhe
+    for mid, soil in enumerate(mats):
         med = _se(media, "medium", id=mid)
         phs = _se(med, "phases")
         # Aqueous-Liquid
@@ -370,6 +438,9 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict) -> Path:
         _const_prop(pp, "viscosity",              fluid["viscosity_Pa_s"])
         _const_prop(pp, "specific_heat_capacity", fluid["cp_J_kgK"])
         _const_prop(pp, "thermal_conductivity",   fluid["lambda_W_mK"])
+        # Keine Grundwasserströmung -> Phasengeschwindigkeit = Nullvektor.
+        # HEAT_TRANSPORT_BHE verlangt diese Eigenschaft fuer den Advektionsterm.
+        _const_prop(pp, "phase_velocity",         "0 0 0")
         # Solid
         ph = _se(phs, "phase"); _se(ph, "type", "Solid")
         pp = _se(ph, "properties")
@@ -389,10 +460,11 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict) -> Path:
     tl = _se(root, "time_loop")
     procs = _se(tl, "processes")
     pref = _se(procs, "process", ref="HeatTransportBHE")
-    nl = _se(pref, "nonlinear_solver"); _se(nl, "name", "basic_picard")
+    _se(pref, "nonlinear_solver", "basic_picard")
     conv = _se(pref, "convergence_criterion")
     _se(conv, "type", "DeltaX"); _se(conv, "norm_type", "NORM2")
     _se(conv, "reltol", sol.get("rel_tol_T", 1e-4))
+    td = _se(pref, "time_discretization"); _se(td, "type", "BackwardEuler")
     ts = _se(pref, "time_stepping")
     _se(ts, "type", "FixedTimeStepping")
     _se(ts, "t_initial", 0)
@@ -405,14 +477,26 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict) -> Path:
     _se(pair, "repeat", n_steps); _se(pair, "delta_t", cfg["time"]["dt_seconds"])
     out = _se(tl, "output")
     _se(out, "type", "VTK"); _se(out, "prefix", prefix)
+    out_vars = _se(out, "variables")
+    _se(out_vars, "variable", "temperature_soil")
+    for i in range(n_bhe):
+        _se(out_vars, "variable", f"temperature_BHE{i+1}")
     out_steps = _se(out, "timesteps"); pair = _se(out_steps, "pair")
     _se(pair, "repeat", n_steps)
     _se(pair, "each_steps", cfg["time"]["output_every_n_steps"])
 
     # Parameters + IC + BCs
     params = _se(root, "parameters")
+    gradient = init.get("geothermal_gradient_K_per_m", 0.0)
     p_T0 = _se(params, "parameter")
-    _se(p_T0, "name", "T0"); _se(p_T0, "type", "Constant"); _se(p_T0, "value", init["T_K"])
+    _se(p_T0, "name", "T0")
+    if abs(gradient) > 1e-12:
+        T_surf = init.get("T_surface_K", init["T_K"])
+        z_tot  = sum(float(L["thickness_m"]) for L in cfg["layers"])
+        _se(p_T0, "type", "Function")
+        _se(p_T0, "expression", f"{T_surf} + ({gradient:.6g})*({z_tot} - z)")
+    else:
+        _se(p_T0, "type", "Constant"); _se(p_T0, "value", init["T_K"])
     p_T0_bhe = _se(params, "parameter")
     _se(p_T0_bhe, "name", "T0_BHE")
     _se(p_T0_bhe, "type", "Constant")
@@ -484,9 +568,11 @@ def main():
         print(f"[1/3] gmsh: 3D-Mesh mit {n_bhe} eingebetteten BHE-Linien ...")
         build_mesh(CONFIG, out_dir)
         print(f"      -> {msh_path}")
-        print("[2/3] msh2vtu ...")
+        print("[2/3] msh2vtu (gemischt-dimensional: 3D + 1D) ...")
+        # OGS HEAT_TRANSPORT_BHE benötigt 3D-Soil + 1D-BHE-Elemente
+        # im selben Domain-Mesh mit unterschiedlichen MaterialIDs.
         msh2vtu(filename=msh_path, output_path=out_dir,
-                output_prefix=prefix, dim=3, reindex=True)
+                output_prefix=prefix, dim=[3, 1], reindex=True)
 
     mesh_files = {
         "domain":  f"{prefix}_domain.vtu",

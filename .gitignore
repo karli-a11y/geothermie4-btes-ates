@@ -11,9 +11,10 @@
 # Instructor-Material (nicht ins Repo)
 SOLUTIONS.md
 SOLUTIONS.pdf
-HANDBUCH.docx
+UEBUNGSSKRIPT.docx
 README.docx
 run_solutions.py
+solar_to_monthly.py
 solutions_raw/
 
 # Sim-Output und Mesh-Zwischendateien
@@ -32,6 +33,17 @@ __pycache__/
 .venv/
 venv/
 .ipynb_checkpoints/
+
+# Entwürfe (noch nicht ins Handbuch eingefügt)
+FORTGESCHRITTENE_AUFGABEN.md
+FORTGESCHRITTENE_AUFGABEN.pdf
+FORTGESCHRITTENE_AUFGABEN.docx
+
+# PDF-Build-Hilfsdateien (lokal)
+_print_header.html
+_pdf_header.tex
+_build.html
+_HANDBUCH_new.pdf
 
 # OS / Editor
 .DS_Store
