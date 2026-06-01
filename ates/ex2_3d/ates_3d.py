@@ -3,10 +3,12 @@
 ATES 3D demo for OpenGeoSys 6 (Hydro-Thermal process).
 
 Geschichtetes Reservoir:  Cap Rock (oben) | Aquifer | Cap Rock (unten)
-Zwei Brunnenfilter (Heiß / Kalt) als kleine Boxen im Aquifer.
+Ein Brunnenfilter als kleine Box im Aquifer (Single-Well-Anlage).
 Zyklischer Lade-/Entlade-Betrieb über CurveScaled-Parameter:
   - Pressure-Equation: Volumetric Source ±Q/V_well auf Brunnenbox
   - Temperature: Dirichlet-BC auf Brunnenbox (curve-skaliert)
+Der Lateralrand des Aquifers ist ein p=0-Outlet, damit das injizierte
+Wasser entweichen kann.
 
 Alle Modellgrößen sind im CONFIG-Block einstellbar.
 Aufruf:
@@ -41,17 +43,10 @@ CONFIG: dict = {
         "caprock_top_thickness_m":    20.0,
     },
     "wells": {
-        # --- Single-Well-Modus (Default) -----------------------------------
-        # Nur der "Hot Well" ist hydraulisch aktiv. Der "Cold Well" ist
-        # geometrisch im Mesh enthalten, aber Massenstrom und Temperatur-
-        # Randbedingung sind deaktiviert (passive Beobachtungs­position).
-        # Zusätzlich wird der Lateral­rand des Aquifers als p=0-Outlet
-        # gesetzt, damit das injizierte Wasser entweichen kann.
-        # Auf False für klassischen Doublet-Betrieb (HW + CW).
-        "single_well_mode": True,
-
-        "hot_well_xy":   ( 0.0,  0.0),     # (x, y) Lage des aktiven Brunnens
-        "cold_well_xy":  (40.0,  0.0),     # passive Position (im Single-Well-Modus)
+        # Single-Well-Anlage: ein aktiver Brunnen. Der Lateralrand des
+        # Aquifers wird als p=0-Outlet gesetzt, damit das am Brunnen
+        # injizierte Wasser entweichen kann.
+        "hot_well_xy":   ( 0.0,  0.0),     # (x, y) Lage des Brunnens
         "screen_bottom_offset_m": 5.0,     # Abstand Filterunterkante vom Aquiferboden
         "screen_top_offset_m":    5.0,     # Abstand Filteroberkante von Aquiferdecke
         "screen_dx_m":             2.0,    # x-Ausdehnung des Filtervolumens
@@ -123,9 +118,8 @@ CONFIG: dict = {
         "p_Pa": 0.0,
     },
     "operation": {
-        "mass_flow_rate_kg_s": 0.5,    # je Brunnen (gesamt über alle Filterpunkte)
-        "T_hot_K":  353.15,            # 80 °C
-        "T_cold_K": 283.15,            # 10 °C
+        "mass_flow_rate_kg_s": 0.5,    # Massenstrom am Brunnen (gesamt über alle Filterpunkte)
+        "T_hot_K":  353.15,            # Vorlauftemperatur Beladung, 80 °C
         # Spezifische Speicherzahl der Phasen (1/Pa). Werte > 0 sind nötig,
         # damit die Druckgleichung transient ist – sonst löst die Punktquelle
         # zu Druck-Singularitäten auf.
@@ -136,9 +130,9 @@ CONFIG: dict = {
     # ZYKLEN – HIER FÜR STUDIERENDE
     # ------------------------------------------------------------------
     # Ein vollständiger Zyklus besteht aus 4 aufeinander folgenden Phasen:
-    #   1) charge                    – Beladung (heiß rein, kalt raus)
+    #   1) charge                    – Beladung (heiß injizieren)
     #   2) storage_after_charge      – Pause/Speicherung nach Beladung
-    #   3) discharge                 – Förderung (heiß raus, kalt rein)
+    #   3) discharge                 – Förderung (Wasser entnehmen)
     #   4) storage_after_discharge   – Pause/Speicherung nach Förderung
     #
     # Periode T_Zyklus = charge + storage_after_charge + discharge + storage_after_discharge
@@ -183,7 +177,7 @@ G   = 9.81
 #  Mesh – gmsh
 # ======================================================================
 def build_mesh(cfg: dict, out_dir: Path) -> Path:
-    """Schichtmodell mit gmsh: 3 Schichten + 2 Brunnenboxen im Aquifer."""
+    """Schichtmodell mit gmsh: 3 Schichten + 1 Brunnenbox im Aquifer."""
     msh_path = out_dir / f"{cfg['output']['prefix']}.msh"
 
     Lx     = cfg["domain"]["size_x_m"]
@@ -199,7 +193,6 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     z_top    = z_aq_top + t_ct
 
     hw  = cfg["wells"]["hot_well_xy"]
-    cw  = cfg["wells"]["cold_well_xy"]
     sob = cfg["wells"]["screen_bottom_offset_m"]
     sot = cfg["wells"]["screen_top_offset_m"]
     dx  = cfg["wells"]["screen_dx_m"]
@@ -224,18 +217,14 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     box_ct = gmsh.model.occ.addBox(x0, y0, z_aq_top, Lx, Ly, t_ct)
     box_hw = gmsh.model.occ.addBox(hw[0] - dx / 2.0, hw[1] - dy / 2.0,
                                    z_screen_bot, dx, dy, h_screen)
-    box_cw = gmsh.model.occ.addBox(cw[0] - dx / 2.0, cw[1] - dy / 2.0,
-                                   z_screen_bot, dx, dy, h_screen)
 
     # Alles fragmentieren (konforme Schnittflächen)
-    gmsh.model.occ.fragment(
-        [(3, box_cb)],
-        [(3, box_aq), (3, box_ct), (3, box_hw), (3, box_cw)],
-    )
+    gmsh.model.occ.fragment([(3, box_cb)],
+                            [(3, box_aq), (3, box_ct), (3, box_hw)])
     gmsh.model.occ.synchronize()
 
     # Volumen klassifizieren
-    vol_aq, vol_ct, vol_cb, vol_hw, vol_cw = [], [], [], [], []
+    vol_aq, vol_ct, vol_cb, vol_hw = [], [], [], []
     for dim, tag in gmsh.model.getEntities(3):
         xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(dim, tag)
         zc = 0.5 * (zmin + zmax)
@@ -251,11 +240,9 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
             small = ext_x < 0.5 * Lx
             if small and abs(xc - hw[0]) < dx and abs(yc - hw[1]) < dy:
                 vol_hw.append(tag)
-            elif small and abs(xc - cw[0]) < dx and abs(yc - cw[1]) < dy:
-                vol_cw.append(tag)
             else:
                 vol_aq.append(tag)
-    if not vol_aq or not vol_hw or not vol_cw:
+    if not vol_aq or not vol_hw:
         raise RuntimeError("Volumenklassifizierung fehlgeschlagen (gmsh-Fragmentierung).")
 
     # Top-/Bottom-Außenflächen + Lateral-Aquifer-Flächen
@@ -280,35 +267,28 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
         if on_outer and in_aquifer_z:
             surf_lat_aq.append(tag)
 
-    # Hüllflächen der Brunnenboxen (für Neumann‑Wärme­fluss)
-    surf_hw, surf_cw = [], []
+    # Hüllflächen der Brunnenbox (für Distanzfeld / Neumann‑Wärme­fluss)
+    surf_hw = []
     for tag in vol_hw:
         for d, t in gmsh.model.getBoundary([(3, tag)], oriented=False):
             if d == 2:
                 surf_hw.append(abs(t))
-    for tag in vol_cw:
-        for d, t in gmsh.model.getBoundary([(3, tag)], oriented=False):
-            if d == 2:
-                surf_cw.append(abs(t))
     surf_hw = sorted(set(surf_hw))
-    surf_cw = sorted(set(surf_cw))
 
     # Physical Groups (Reihenfolge -> tag -> MaterialID nach reindex)
     gmsh.model.addPhysicalGroup(3, vol_aq, tag=1, name="aquifer")
     gmsh.model.addPhysicalGroup(3, vol_ct, tag=2, name="caprock_top")
     gmsh.model.addPhysicalGroup(3, vol_cb, tag=3, name="caprock_bottom")
     gmsh.model.addPhysicalGroup(3, vol_hw, tag=4, name="hot_well_vol")
-    gmsh.model.addPhysicalGroup(3, vol_cw, tag=5, name="cold_well_vol")
     gmsh.model.addPhysicalGroup(2, surf_top, tag=10, name="top")
     gmsh.model.addPhysicalGroup(2, surf_bot, tag=11, name="bottom")
     gmsh.model.addPhysicalGroup(2, surf_hw,  tag=12, name="hot_well_surf")
-    gmsh.model.addPhysicalGroup(2, surf_cw,  tag=13, name="cold_well_surf")
     if surf_lat_aq:
         gmsh.model.addPhysicalGroup(2, surf_lat_aq, tag=14, name="lateral_aquifer")
 
-    # Hülle der Brunnenboxen (für Distanzfeld)
+    # Hülle der Brunnenbox (für Distanzfeld)
     well_surfaces: list[int] = []
-    for tag in vol_hw + vol_cw:
+    for tag in vol_hw:
         for d, t in gmsh.model.getBoundary([(3, tag)], oriented=False):
             if d == 2:
                 well_surfaces.append(abs(t))
@@ -323,9 +303,9 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     gmsh.model.mesh.field.setNumber(f_thr, "DistMax", r_far)
     gmsh.model.mesh.field.setAsBackgroundMesh(f_thr)
 
-    # Innerhalb der Brunnenboxen sehr feines Netz (Punkte der Filterboxen)
+    # Innerhalb der Brunnenbox sehr feines Netz (Punkte der Filterbox)
     well_points: list[tuple[int, int]] = []
-    for tag in vol_hw + vol_cw:
+    for tag in vol_hw:
         for d, t in gmsh.model.getBoundary([(3, tag)], recursive=True, oriented=False):
             if d == 0:
                 well_points.append((d, t))
@@ -343,6 +323,18 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     return msh_path
 
 
+def _mesh_files(cfg: dict) -> dict[str, str]:
+    prefix = cfg["output"]["prefix"]
+    return {
+        "domain":          f"{prefix}_domain.vtu",
+        "top":             f"{prefix}_physical_group_top.vtu",
+        "bottom":          f"{prefix}_physical_group_bottom.vtu",
+        "hot_well_vol":    f"{prefix}_physical_group_hot_well_vol.vtu",
+        "hot_well_surf":   f"{prefix}_physical_group_hot_well_surf.vtu",
+        "lateral_aquifer": f"{prefix}_physical_group_lateral_aquifer.vtu",
+    }
+
+
 def convert_mesh(cfg: dict, msh_path: Path, out_dir: Path) -> dict[str, str]:
     """gmsh-Mesh -> OGS .vtu (Domäne + Subdomänen)."""
     import ogstools as ot
@@ -358,26 +350,17 @@ def convert_mesh(cfg: dict, msh_path: Path, out_dir: Path) -> dict[str, str]:
         else:
             fname = f"{prefix}_physical_group_{name}.vtu"
         mesh.save(str(out_dir / fname), binary=True)
-    return {
-        "domain":          f"{prefix}_domain.vtu",
-        "top":             f"{prefix}_physical_group_top.vtu",
-        "bottom":          f"{prefix}_physical_group_bottom.vtu",
-        "hot_well_vol":    f"{prefix}_physical_group_hot_well_vol.vtu",
-        "cold_well_vol":   f"{prefix}_physical_group_cold_well_vol.vtu",
-        "hot_well_surf":   f"{prefix}_physical_group_hot_well_surf.vtu",
-        "cold_well_surf":  f"{prefix}_physical_group_cold_well_surf.vtu",
-        "lateral_aquifer": f"{prefix}_physical_group_lateral_aquifer.vtu",
-    }
+    return _mesh_files(cfg)
 
 
 # ======================================================================
 #  Zyklus-Kurven
 # ======================================================================
 def build_cycle_curves(cfg: dict) -> dict:
-    """Zeit-stetige Kurven für Massenquellen und Brunnen-Dirichlet-T.
+    """Zeit-stetige Kurven für Massenquelle und Brunnen-Dirichlet-T.
 
-    Mass-Curves: +1 Injektion, -1 Förderung, 0 Pause.
-    T-Curves: Skalierungs-Faktor für den Dirichlet-Wert am Brunnen.
+    Mass-Curve:  +1 Injektion, -1 Förderung, 0 Pause.
+    T-Curve:     Skalierungs-Faktor für den Dirichlet-Wert am Brunnen.
       - Während Injektion = 1.0 (Brunnen liegt auf T_inj)
       - Sonst T0/T_inj   (Brunnen ruht auf Hintergrund-T0)
     """
@@ -388,50 +371,38 @@ def build_cycle_curves(cfg: dict) -> dict:
     t_sd  = cfg["cycles"]["storage_after_discharge_days"] * DAY
     ramp  = max(60.0, cfg["cycles"]["ramp_days"] * DAY)
 
-    T0     = cfg["initial"]["T_K"]
-    T_hot  = cfg["operation"]["T_hot_K"]
-    T_cold = cfg["operation"]["T_cold_K"]
+    T0    = cfg["initial"]["T_K"]
+    T_hot = cfg["operation"]["T_hot_K"]
     rh = T0 / T_hot
-    rc = T0 / T_cold
 
-    # Phasen: (Name, Dauer, mass_hot, T_hot_curve, mass_cold, T_cold_curve)
+    # Phasen: (Name, Dauer, mass, T_curve)
     phases = [
-        ("charge",          t_c,  +1.0, 1.0, -1.0, rc),
-        ("storage_after_c", t_sc,  0.0, rh,   0.0, rc),
-        ("discharge",       t_d,  -1.0, rh,  +1.0, 1.0),
-        ("storage_after_d", t_sd,  0.0, rh,   0.0, rc),
+        ("charge",          t_c,  +1.0, 1.0),
+        ("storage_after_c", t_sc,  0.0, rh),
+        ("discharge",       t_d,  -1.0, rh),
+        ("storage_after_d", t_sd,  0.0, rh),
     ]
 
     times = [0.0]
-    v_mh, v_th = [0.0], [rh]
-    v_mc, v_tc = [0.0], [rc]
+    v_m, v_t = [0.0], [rh]
     t_now = 0.0
-
     for _cyc in range(n):
-        for _name, dur, mh, th, mc, tc in phases:
+        for _name, dur, m, th in phases:
             if dur <= 0.0:
                 continue
             t_now += ramp
-            times.append(t_now); v_mh.append(mh); v_th.append(th); v_mc.append(mc); v_tc.append(tc)
+            times.append(t_now); v_m.append(m); v_t.append(th)
             hold = max(0.0, dur - ramp)
             if hold > 0.0:
                 t_now += hold
-                times.append(t_now); v_mh.append(mh); v_th.append(th); v_mc.append(mc); v_tc.append(tc)
+                times.append(t_now); v_m.append(m); v_t.append(th)
     t_now += ramp
-    times.append(t_now); v_mh.append(0.0); v_th.append(rh); v_mc.append(0.0); v_tc.append(rc)
-
-    # Single-Well-Modus: Cold Well komplett deaktivieren (Massenstrom = 0,
-    # Dirichlet-T auf Hintergrund­temperatur).
-    if cfg["wells"].get("single_well_mode", False):
-        v_mc = [0.0] * len(v_mc)
-        v_tc = [rh ] * len(v_tc)
+    times.append(t_now); v_m.append(0.0); v_t.append(rh)
 
     return {
-        "t_total":         t_now,
-        "cycle_mass_hot":  (np.array(times), np.array(v_mh)),
-        "cycle_mass_cold": (np.array(times), np.array(v_mc)),
-        "cycle_T_hot":     (np.array(times), np.array(v_th)),
-        "cycle_T_cold":    (np.array(times), np.array(v_tc)),
+        "t_total":        t_now,
+        "cycle_mass_hot": (np.array(times), np.array(v_m)),
+        "cycle_T_hot":    (np.array(times), np.array(v_t)),
     }
 
 
@@ -544,22 +515,16 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     dx_w = cfg["wells"]["screen_dx_m"]
     dy_w = cfg["wells"]["screen_dy_m"]
     V_well = dx_w * dy_w * h_screen
-    A_well = 2.0 * (dx_w * dy_w + dx_w * h_screen + dy_w * h_screen)
 
-    Q_total = op["mass_flow_rate_kg_s"]                  # kg/s gesamt je Brunnen
+    Q_total = op["mass_flow_rate_kg_s"]                  # kg/s gesamt am Brunnen
     q_v_mass = Q_total / V_well                          # kg/(m³·s) – Druckeq.
-
-    # A_well bleibt nur als Diagnostik im Skript erhalten (z.B. für künftige Neumann-Variante)
-    _ = A_well
 
     root = ET.Element("OpenGeoSysProject")
 
     # -- Meshes
     meshes = ET.SubElement(root, "meshes")
-    _mesh_keys = ["domain", "top", "bottom",
-                  "hot_well_vol",  "cold_well_vol",
-                  "hot_well_surf", "cold_well_surf"]
-    if cfg["wells"].get("single_well_mode", False) and "lateral_aquifer" in mesh_files:
+    _mesh_keys = ["domain", "top", "bottom", "hot_well_vol", "hot_well_surf"]
+    if "lateral_aquifer" in mesh_files:
         _mesh_keys.append("lateral_aquifer")
     for k in _mesh_keys:
         _se(meshes, "mesh", mesh_files[k])
@@ -588,7 +553,6 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     _add_medium(media, 1, cfg["materials"]["caprock_top"],    fluid, op, disp)
     _add_medium(media, 2, cfg["materials"]["caprock_bottom"], fluid, op, disp)
     _add_medium(media, 3, well_mat,                           fluid, op, disp)
-    _add_medium(media, 4, well_mat,                           fluid, op, disp)
 
     # -- Time loop
     tl = _se(root, "time_loop")
@@ -627,10 +591,8 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
 
     # -- Parameters
     params = _se(root, "parameters")
-    _const_param(params, "T0",      init["T_K"])
-    _const_param(params, "p0",      init["p_Pa"])
-    _const_param(params, "T_hot",   op["T_hot_K"])
-    _const_param(params, "T_cold",  op["T_cold_K"])
+    _const_param(params, "T0", init["T_K"])
+    _const_param(params, "p0", init["p_Pa"])
 
     # Regionaler GW-Druckgradient als Function-Parameter
     gw = cfg.get("regional_gw", {})
@@ -646,21 +608,15 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         _se(p, "type", "Function")
         _se(p, "expression", f"{init['p_Pa']} + ({gx:.6g})*x + ({gy:.6g})*y")
 
-    # Basisamplituden
+    # Basisamplituden + curve-skalierte Parameter
     _const_param(params, "q_mass_amp", q_v_mass)
     _const_param(params, "T_hot_amp",  op["T_hot_K"])
-    _const_param(params, "T_cold_amp", op["T_cold_K"])
-
-    # Curve-skalierte Parameter
-    _curve_scaled_param(params, "q_mass_hot",   "cycle_mass_hot",  "q_mass_amp")
-    _curve_scaled_param(params, "q_mass_cold",  "cycle_mass_cold", "q_mass_amp")
-    _curve_scaled_param(params, "T_hot_well",   "cycle_T_hot",     "T_hot_amp")
-    _curve_scaled_param(params, "T_cold_well",  "cycle_T_cold",    "T_cold_amp")
+    _curve_scaled_param(params, "q_mass_hot", "cycle_mass_hot", "q_mass_amp")
+    _curve_scaled_param(params, "T_hot_well", "cycle_T_hot",    "T_hot_amp")
 
     # -- Curves
     cv = _se(root, "curves")
-    for name in ("cycle_mass_hot", "cycle_mass_cold",
-                 "cycle_T_hot",    "cycle_T_cold"):
+    for name in ("cycle_mass_hot", "cycle_T_hot"):
         t, v = curves[name]
         _curve_xml(cv, name, t, v)
 
@@ -684,12 +640,10 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     # (Hinweis: Eine 2nd-type/Neumann-Variante auf der Brunnenhülle ist
     # physikalisch sauberer, in OGS HT auf inneren Trennflächen aber
     # numerisch instabil ohne SUPG-artige Stabilisierung.)
-    for vol, param in (("hot_well_vol",  "T_hot_well"),
-                       ("cold_well_vol", "T_cold_well")):
-        bc = _se(bcs_T, "boundary_condition")
-        _se(bc, "mesh",      Path(mesh_files[vol]).stem)
-        _se(bc, "type",      "Dirichlet")
-        _se(bc, "parameter", param)
+    bc = _se(bcs_T, "boundary_condition")
+    _se(bc, "mesh",      Path(mesh_files["hot_well_vol"]).stem)
+    _se(bc, "type",      "Dirichlet")
+    _se(bc, "parameter", "T_hot_well")
 
     # Druck
     pv_p = _se(pvars, "process_variable")
@@ -703,11 +657,10 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         _se(bc, "mesh",      Path(mesh_files[face]).stem)
         _se(bc, "type",      "Dirichlet")
         _se(bc, "parameter", "p0")
-    # Im Single-Well-Modus: Lateral-Aquifer als Druck-Outlet, damit
-    # das am Brunnen injizierte Wasser entweichen kann.
-    # Falls zusätzlich regional_gw.enable=True: linearer Druckgradient
-    # statt konstantem p0 → Hintergrund-Strömung durch den Aquifer.
-    if cfg["wells"].get("single_well_mode", False) and "lateral_aquifer" in mesh_files:
+    # Lateral-Aquifer als Druck-Outlet, damit das am Brunnen injizierte
+    # Wasser entweichen kann. Falls regional_gw.enable=True: linearer
+    # Druckgradient statt konstantem p0 → Hintergrund-Strömung.
+    if "lateral_aquifer" in mesh_files:
         bc = _se(bcs_p, "boundary_condition")
         _se(bc, "mesh",      Path(mesh_files["lateral_aquifer"]).stem)
         _se(bc, "type",      "Dirichlet")
@@ -716,12 +669,10 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         else:
             _se(bc, "parameter", "p0")
     sts_p = _se(pv_p, "source_terms")
-    for vol, param in (("hot_well_vol",  "q_mass_hot"),
-                       ("cold_well_vol", "q_mass_cold")):
-        st = _se(sts_p, "source_term")
-        _se(st, "mesh",      Path(mesh_files[vol]).stem)
-        _se(st, "type",      "Volumetric")
-        _se(st, "parameter", param)
+    st = _se(sts_p, "source_term")
+    _se(st, "mesh",      Path(mesh_files["hot_well_vol"]).stem)
+    _se(st, "type",      "Volumetric")
+    _se(st, "parameter", "q_mass_hot")
 
     # -- Solvers
     nls = _se(root, "nonlinear_solvers")
@@ -794,22 +745,13 @@ def main() -> int:
     msh_path = out_dir / f"{prefix}.msh"
 
     if not args.no_mesh:
-        print("[1/3] gmsh: 3D Schichtmodell + Brunnenboxen ...")
+        print("[1/3] gmsh: 3D Schichtmodell + Brunnenbox ...")
         build_mesh(CONFIG, out_dir)
         print(f"      {msh_path}")
         print("[2/3] msh2vtu: Konvertierung in OGS-Meshes ...")
         mesh_files = convert_mesh(CONFIG, msh_path, out_dir)
     else:
-        mesh_files = {
-            "domain":          f"{prefix}_domain.vtu",
-            "top":             f"{prefix}_physical_group_top.vtu",
-            "bottom":          f"{prefix}_physical_group_bottom.vtu",
-            "hot_well_vol":    f"{prefix}_physical_group_hot_well_vol.vtu",
-            "cold_well_vol":   f"{prefix}_physical_group_cold_well_vol.vtu",
-            "hot_well_surf":   f"{prefix}_physical_group_hot_well_surf.vtu",
-            "cold_well_surf":  f"{prefix}_physical_group_cold_well_surf.vtu",
-            "lateral_aquifer": f"{prefix}_physical_group_lateral_aquifer.vtu",
-        }
+        mesh_files = _mesh_files(CONFIG)
 
     print("[3/3] OGS-Projektdatei erzeugen ...")
     curves = build_cycle_curves(CONFIG)

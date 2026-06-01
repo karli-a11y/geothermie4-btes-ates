@@ -72,7 +72,6 @@ def main() -> int:
     rho_cp = effective_rho_cp(CONFIG)
 
     hw_xy = CONFIG["wells"]["hot_well_xy"]
-    cw_xy = CONFIG["wells"]["cold_well_xy"]
     z_aq_bot = CONFIG["layers"]["caprock_bottom_thickness_m"]
     z_aq_top = z_aq_bot + CONFIG["layers"]["aquifer_thickness_m"]
     z_mid    = 0.5 * (z_aq_bot + z_aq_top)
@@ -80,21 +79,19 @@ def main() -> int:
     steps = read_pvd(pvd)
     times = np.array([t for t, _ in steps]); times_d = times / DAY
 
-    # 1) T(t) an HW/CW -------------------------------------------------
-    probes = np.array([[hw_xy[0], hw_xy[1], z_mid],
-                       [cw_xy[0], cw_xy[1], z_mid]])
-    T_hw, T_cw = [], []
+    # 1) T(t) am Brunnen ----------------------------------------------
+    probes = np.array([[hw_xy[0], hw_xy[1], z_mid]])
+    T_hw = []
     for _, f in steps:
         m = pv.read(f)
         p = pv.PolyData(probes).sample(m)
-        T_hw.append(float(p["T"][0])); T_cw.append(float(p["T"][1]))
-    T_hw = np.array(T_hw); T_cw = np.array(T_cw)
+        T_hw.append(float(p["T"][0]))
+    T_hw = np.array(T_hw)
 
     fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(times_d, T_hw - 273.15, lw=2, color="tab:red", label="Hot Well")
-    ax.plot(times_d, T_cw - 273.15, lw=2, color="tab:blue", label="Cold Well")
+    ax.plot(times_d, T_hw - 273.15, lw=2, color="tab:red", label="Brunnen")
     ax.set_xlabel("Zeit [d]"); ax.set_ylabel("T [°C]")
-    ax.set_title("Temperatur an HW und CW (Aquifer-Mitte)")
+    ax.set_title("Temperatur am Brunnen (Aquifer-Mitte)")
     ax.legend(); ax.grid(True, alpha=0.3); fig.tight_layout()
     fig.savefig(fig_dir / "1_well_temperature.png", dpi=130); plt.close(fig)
 
@@ -109,8 +106,7 @@ def main() -> int:
         pts = sl.points
         sc = ax.tricontourf(pts[:, 0], pts[:, 1], sl["T"] - 273.15,
                             levels=20, cmap="inferno")
-        ax.scatter(*hw_xy, c="red",  s=40, marker="o", edgecolors="white", label="HW")
-        ax.scatter(*cw_xy, c="blue", s=40, marker="o", edgecolors="white", label="CW")
+        ax.scatter(*hw_xy, c="red",  s=40, marker="o", edgecolors="white", label="Brunnen")
         ax.set_xlabel("x [m]"); ax.set_title(f"t = {t/DAY:.0f} d"); ax.set_aspect("equal")
     axes[0].set_ylabel("y [m]")
     axes[-1].legend(loc="upper right")

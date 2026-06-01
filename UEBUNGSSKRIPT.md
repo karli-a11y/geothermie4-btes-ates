@@ -949,11 +949,9 @@ Massenstrom.
 
 ### 8.2 ATES 3D Single-Well (Übung 2)
 
-Volle dreidimensionale Modelldomäne (rechteckiges Volumen) mit aktivem Brunnen
-im Zentrum. Eine zweite Brunnengeometrie (CW) ist im Mesh enthalten,
-hydraulisch jedoch deaktiviert — sie dient als passive Beobachtungsposition.
-Lateralrand des Aquifers als Druck-Outlet (Dirichlet *p* = 0). Typisch
-50.000–200.000 Zellen.
+Volle dreidimensionale Modelldomäne (rechteckiges Volumen) mit einem Brunnen
+im Zentrum. Lateralrand des Aquifers als Druck-Outlet (Dirichlet *p* = 0).
+Typisch 50.000–200.000 Zellen.
 
 ![FEM-Mesh ATES 3D](ates/geometry_3d.png)
 
@@ -970,22 +968,17 @@ die heiße Fahne, der Plume wird vertikal asymmetrisch), **regionale
 Grundwasserströmung** (verschiebt den Plume), **3D-Plume-Geometrie** (nicht
 mehr exakt radial).
 
-> **Doublet-Modus.** Auf Wunsch lässt sich ein klassischer Doublet-Betrieb
-> (Hot Well + Cold Well, gegenphasig) aktivieren durch
-> `wells.single_well_mode = False`.
-
 **Relevante Konfiguration** (gemeinsame Blöcke siehe Kapitel 6):
 
 | Parameter                                | Bedeutung                                  |
 |------------------------------------------|--------------------------------------------|
-| `wells.single_well_mode`                 | True = nur HW aktiv (Default), False = Doublet |
-| `wells.hot_well_xy`, `cold_well_xy`      | Lage des aktiven / passiven Brunnens [m]   |
+| `wells.hot_well_xy`                      | Lage des Brunnens [m]                      |
 | `wells.screen_dx_m`, `screen_dy_m`       | Filtervolumen-Ausdehnung [m]               |
 | `wells.screen_permeability_m2`           | Permeabilität im Filterkies                |
 | `domain.size_x_m`, `domain.size_y_m`     | Lateralausdehnung [m]                      |
 | `layers.aquifer_thickness_m`             | Aquiferdicke [m]                           |
-| `operation.mass_flow_rate_kg_s`          | Massenstrom je Brunnen [kg/s]              |
-| `operation.T_hot_K`, `T_cold_K`          | Vorlauftemperatur Lade-/Förderphase [K]    |
+| `operation.mass_flow_rate_kg_s`          | Massenstrom am Brunnen [kg/s]              |
+| `operation.T_hot_K`                      | Vorlauftemperatur Beladung [K]             |
 | `fluid.beta_1_per_K`                     | therm. Ausdehnungskoeffizient (Auftrieb)   |
 | `regional_gw.enable`, `gradient_m_per_m`, `direction_deg` | regionale Grundwasserströmung (optional) |
 
