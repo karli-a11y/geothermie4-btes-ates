@@ -1081,8 +1081,9 @@ Brunneninstallation näher kommt.
 Das Plot-Skript jeder Übung erzeugt fünf PNG-Bilder im Unter­verzeichnis
 `figures/`. Die **Rohdaten** der Simulation liegen daneben im
 `out/`-Verzeichnis (`*.vtu` pro Zeitschritt, `*.pvd` als
-Zeit­serien-Sammeldatei). Diese lassen sich auch direkt in ParaView
-öffnen, um eigene Visualisierungen zu erstellen.
+Zeit­serien-Sammeldatei). Diese lassen sich direkt in **ParaView**
+öffnen, um interaktiv eigene Visualisierungen zu erstellen
+(Schnitte, Animationen, frei wählbare Felder) — siehe Abschnitt 9.6.
 
 ### 9.1 `1_well_temperature.png` — T am Brunnen/Sonde
 
@@ -1175,6 +1176,52 @@ sind als sanfter Übergang zwischen den Phasen sichtbar. Im Modus B
 (Monatsprofil) wird das tatsächlich eingestellte Saisonprofil
 visualisiert.
 
+### 9.6 Eigene Visualisierung in ParaView
+
+Die PNG-Bilder aus dem Plot-Skript sind feste Momentaufnahmen. Für
+eigene Schnitte, frei gewählte Felder oder Animationen über die Zeit
+eignet sich **ParaView** — das Standard-Tool für die `.vtu`/`.pvd`-Daten
+aus OGS.
+
+**Installation:** kostenlos unter <https://www.paraview.org/download/>
+(Windows / Linux / macOS), keine Anmeldung nötig.
+
+**Erste Schritte:**
+
+1. ParaView starten → *File ▸ Open* → im `out/`-Verzeichnis der Übung
+   die **`.pvd`-Datei** wählen (sie bündelt alle Zeitschritte als
+   Zeitserie; einzelne `*.vtu` gehen auch, dann ohne Zeitachse).
+   *Apply* klicken.
+2. In der Toolbar das darzustellende Feld wählen (z. B. **`temperature`**
+   bzw. `T`, oder `pressure`). Mit *Rescale to Data Range* die Farbskala
+   anpassen, *Rescale to Custom Range* für feste Skala über alle
+   Zeitschritte (vergleichbar zwischen Snapshots).
+3. Mit den **Play-Buttons** oben durch die Zeitschritte animieren; die
+   aktuelle Simulationszeit steht in der *Information*-Leiste.
+4. Nützliche Filter (*Filters ▸ …* oder Toolbar):
+   - **Slice** — Schnittebene durch das 3D-Feld legen (bei `btes_3d`/
+     `ates_3d`).
+   - **Warp By Scalar** / **Clip** — Bereiche freistellen.
+   - **Plot Over Line** — *T* entlang einer Linie (z. B. radial vom
+     Brunnen) als Diagramm.
+   - **Contour** — Isoflächen, z. B. ΔT = 1 K als Plume-Rand
+     (vgl. 9.4).
+5. Export: *File ▸ Save Screenshot* (Bild) oder *Save Animation*
+   (Video/Bildserie).
+
+> Tipp: Beim 2D-Radialmodell (`*_radial_2d`) ist die *x*-Achse der
+> Radius *r*, die *y*-Achse die Tiefe *z* — die Domäne ist eine
+> (*r*, *z*)-Halbebene, kein kartesischer Schnitt.
+
+**Aufgabe P-VIS1 — Plume in ParaView erkunden**
+Öffne die `.pvd`-Datei einer durchgerechneten Übung in ParaView. (a) Färbe
+nach `temperature` und animiere einen vollen Lade-/Förder-Zyklus.
+Beschreibe, wie sich die warme Fahne ausbildet und in der Pause/Förder­phase
+zurückbildet. (b) Lege mit **Contour** die Isofläche ΔT = 1 K an und
+vergleiche die Reichweite qualitativ mit `4_plume_extent.png` (Abschnitt 9.4).
+(c) Lege mit **Plot Over Line** ein radiales Temperaturprofil vom
+Brunnen/von der Sonde nach außen und beurteile die Eindringtiefe.
+
 ---
 
 ## 10. Fehlersuche
@@ -1182,6 +1229,7 @@ visualisiert.
 | Symptom                                  | Ursache / Fix                                                    |
 |------------------------------------------|------------------------------------------------------------------|
 | `ogs.exe nicht im PATH`                  | Scripts-Verzeichnis dem `PATH` hinzufügen (s. Installation)      |
+| `OGS_BIN_DIR does not exist` / Crash in `NodeReordering` / `posix_spawn` | **Falsche Python-Version.** Für `ogs`/`ogstools` gibt es nur Wheels (inkl. Binaries) für **Python 3.10–3.12**. Unter z. B. 3.13/3.14 fehlt die `NodeReordering`-Executable. Umgebung mit Python 3.12 neu aufsetzen (`poetry env use python3.12 && poetry install` bzw. frisches venv mit 3.12). |
 | `ImportError: msh2vtu`                   | `pip install --upgrade ogstools`                                 |
 | OGS bricht ab mit „singular matrix"      | `dt_seconds` halbieren, `ramp_days` ↑                            |
 | Unphysikalische T-Spitzen / Negativwerte | (ATES) `dispersion.alpha_L_m` ↑ (5–10 m), Mesh feiner            |
