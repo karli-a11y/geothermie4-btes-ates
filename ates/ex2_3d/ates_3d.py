@@ -142,14 +142,29 @@ CONFIG: dict = {
     #   - Saisonal (1 Jahr/Zyklus): 91.25 / 91.25 / 91.25 / 91.25
     #   - Sommerladung 120 d, Winterförderung 120 d, sonst Pause: 120 / 60 / 120 / 60
     #   - Phase auf 0 setzen, um sie zu deaktivieren.
+    #
+    # Alternativ — Modus B (Monatsprofil): Setze cycles.monthly_power_W auf eine
+    # Liste von 12 Monatsleistungen [W] (positiv = laden/injizieren, negativ =
+    # fördern/entnehmen, 0 = Stillstand). Dann wird die 4-Phasen-Logik
+    # überschrieben; jeder Monat dauert 365.25/12 ≈ 30.44 d und die Sequenz wird
+    # n_cycles-mal (= Jahre) wiederholt. Als Referenzleistung dient
+    #   P_ref = mass_flow_rate_kg_s · cp · (T_hot_K − T_K),
+    # d. h. der Massenstrom wird linear mit P_month/P_ref skaliert. Optional gibt
+    # cycles.monthly_T_inj_K (12 Werte) die monatliche Vorlauftemperatur der
+    # Beladung vor (sonst T_hot_K). Auf None lassen für Modus A.
     # ------------------------------------------------------------------
     "cycles": {
-        "n_cycles":                     3,     # Anzahl Wiederholungen des Zyklus
+        "n_cycles":                     3,     # Anzahl Zyklen (A) bzw. Jahre (B)
         "charge_days":                 90,     # Phase 1: Beladung (Tage)
         "storage_after_charge_days":    0,     # Phase 2: Pause nach Beladung (Tage)
         "discharge_days":              90,     # Phase 3: Förderung (Tage)
         "storage_after_discharge_days": 0,     # Phase 4: Pause nach Förderung (Tage)
         "ramp_days":                    1.0,   # Sanfte Übergangsrampe zwischen Phasen (Tage)
+        # --- Modus B: Monatsprofil (auf None für Modus A) ---
+        # Beispiel: 6 Monate laden, 6 Monate fördern
+        #   "monthly_power_W": [+80_000]*6 + [-80_000]*6,
+        "monthly_power_W":              None,
+        "monthly_T_inj_K":              None,   # optional: 12 Vorlauftemperaturen [K]
     },
     "time": {
         "dt_seconds":           86400.0,    # 1 Tag
@@ -364,16 +379,60 @@ def build_cycle_curves(cfg: dict) -> dict:
       - Während Injektion = 1.0 (Brunnen liegt auf T_inj)
       - Sonst T0/T_inj   (Brunnen ruht auf Hintergrund-T0)
     """
-    n     = cfg["cycles"]["n_cycles"]
-    t_c   = cfg["cycles"]["charge_days"]                  * DAY
-    t_sc  = cfg["cycles"]["storage_after_charge_days"]    * DAY
-    t_d   = cfg["cycles"]["discharge_days"]               * DAY
-    t_sd  = cfg["cycles"]["storage_after_discharge_days"] * DAY
-    ramp  = max(60.0, cfg["cycles"]["ramp_days"] * DAY)
+    cyc   = cfg["cycles"]
+    n     = cyc["n_cycles"]
+    ramp  = max(60.0, cyc["ramp_days"] * DAY)
 
     T0    = cfg["initial"]["T_K"]
     T_hot = cfg["operation"]["T_hot_K"]
     rh = T0 / T_hot
+
+    # === Modus B: Monatsprofil (überschreibt 4-Phasen-Logik) ===
+    monthly_P = cyc.get("monthly_power_W")
+    if monthly_P is not None:
+        assert len(monthly_P) == 12, "cycles.monthly_power_W muss 12 Werte enthalten."
+        monthly_T = cyc.get("monthly_T_inj_K")
+        if monthly_T is not None:
+            assert len(monthly_T) == 12, "cycles.monthly_T_inj_K muss 12 Werte enthalten."
+        cp_f  = cfg["fluid"]["cp_J_kgK"]
+        m_nom = cfg["operation"]["mass_flow_rate_kg_s"]
+        if m_nom == 0:
+            raise ValueError("operation.mass_flow_rate_kg_s muss > 0 sein (Referenz-Massenstrom).")
+        # Referenzleistung: Massenstrom bei Nenn-Vorlauf gegen Hintergrund-T0
+        P_ref = m_nom * cp_f * (T_hot - T0)
+        if P_ref == 0:
+            raise ValueError("T_hot_K muss ≠ T_K sein (Referenzleistung > 0).")
+        month_dur = 365.25 / 12.0 * DAY      # ~30.44 d
+        times = [0.0]; v_m = [0.0]; v_t = [rh]; t_now = 0.0
+        for _ in range(n):
+            for m, P_month in enumerate(monthly_P):
+                # Massenstrom linear zur Speicherleistung; Vorzeichen = Richtung
+                # (+ injizieren/laden, − entnehmen/fördern).
+                m_rel = float(P_month) / P_ref
+                if P_month > 0:                      # Beladung: Vorlauf-T vorgeben
+                    T_inj = monthly_T[m] if monthly_T is not None else T_hot
+                    T_rel = T_inj / T_hot
+                else:                                # Förderung/Pause: Brunnen auf T0
+                    T_rel = rh
+                t_now += ramp
+                times.append(t_now); v_m.append(m_rel); v_t.append(T_rel)
+                hold = max(0.0, month_dur - ramp)
+                if hold > 0.0:
+                    t_now += hold
+                    times.append(t_now); v_m.append(m_rel); v_t.append(T_rel)
+        t_now += ramp
+        times.append(t_now); v_m.append(0.0); v_t.append(rh)
+        return {
+            "t_total":        t_now,
+            "cycle_mass_hot": (np.array(times), np.array(v_m)),
+            "cycle_T_hot":    (np.array(times), np.array(v_t)),
+        }
+
+    # === Modus A: 4-Phasen-Zyklus (Default) ===
+    t_c   = cyc["charge_days"]                  * DAY
+    t_sc  = cyc["storage_after_charge_days"]    * DAY
+    t_d   = cyc["discharge_days"]               * DAY
+    t_sd  = cyc["storage_after_discharge_days"] * DAY
 
     # Phasen: (Name, Dauer, mass, T_curve)
     phases = [

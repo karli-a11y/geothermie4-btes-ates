@@ -143,14 +143,25 @@ CONFIG: dict = {
     #
     # Periode T_Zyklus = charge + storage_after_charge + discharge + storage_after_discharge
     # Gesamt­simulations­zeit = n_cycles * T_Zyklus
+    #
+    # Alternativ — Modus B (Monatsprofil): Setze cycles.monthly_power_W auf eine
+    # Liste von 12 Monatsleistungen [W] (positiv = laden, negativ = fördern,
+    # 0 = Stillstand). Dann wird die 4-Phasen-Logik überschrieben; jeder Monat
+    # dauert 365.25/12 ≈ 30.44 d und die Sequenz wird n_cycles-mal (= Jahre)
+    # wiederholt. operation.power_per_borehole_W dient dabei als Referenz­leistung
+    # (Skalierung der OGS-Curve). Auf None lassen für Modus A.
     # ------------------------------------------------------------------
     "cycles": {
-        "n_cycles":                        1,       # Anzahl Wiederholungen des Zyklus
+        "n_cycles":                        1,       # Anzahl Zyklen (A) bzw. Jahre (B)
         "charge_days":                     91.25,   # Phase 1: Beladung (Tage)
         "storage_after_charge_days":       91.25,   # Phase 2: Pause nach Beladung (Tage)
         "discharge_days":                  91.25,   # Phase 3: Förderung (Tage)
         "storage_after_discharge_days":    91.25,   # Phase 4: Pause nach Förderung (Tage)
         "ramp_days":                       7.0,     # Sanfte Übergangsrampe zwischen Phasen (Tage)
+        # --- Modus B: Monatsprofil (auf None für Modus A) ---
+        # Beispiel: 6 Monate laden (+2000 W), 6 Monate fördern (-2000 W)
+        #   "monthly_power_W": [+2000]*6 + [-2000]*6,
+        "monthly_power_W":                 None,
     },
     "time": {
         "dt_seconds":           7 * 86400.0,
@@ -377,13 +388,43 @@ def convert_mesh(cfg: dict, msh_path: Path, out_dir: Path) -> dict:
 #  Zyklen-Kurve
 # ======================================================================
 def build_cycle_curves(cfg: dict) -> dict:
-    """Eine Kurve für alle Sonden: +1 Beladung, 0 Pause, -1 Förderung."""
-    n     = cfg["cycles"]["n_cycles"]
-    t_c   = cfg["cycles"]["charge_days"]                  * DAY
-    t_sc  = cfg["cycles"]["storage_after_charge_days"]    * DAY
-    t_d   = cfg["cycles"]["discharge_days"]               * DAY
-    t_sd  = cfg["cycles"]["storage_after_discharge_days"] * DAY
-    ramp  = max(60.0, cfg["cycles"]["ramp_days"] * DAY)
+    """Eine Kurve für alle Sonden: +1 Beladung, 0 Pause, -1 Förderung.
+
+    Modus A (Default): 4-Phasen-Zyklus.
+    Modus B (cycles.monthly_power_W ≠ None): 12 Monatsleistungen [W], skaliert
+    auf operation.power_per_borehole_W (Referenzleistung).
+    """
+    cyc   = cfg["cycles"]
+    ramp  = max(60.0, cyc["ramp_days"] * DAY)
+    n     = cyc["n_cycles"]
+
+    # === Modus B: Monatsprofil (überschreibt 4-Phasen-Logik) ===
+    monthly = cyc.get("monthly_power_W")
+    if monthly is not None:
+        assert len(monthly) == 12, "cycles.monthly_power_W muss 12 Werte enthalten."
+        P_nominal = cfg["operation"]["power_per_borehole_W"]
+        if P_nominal == 0:
+            raise ValueError("operation.power_per_borehole_W muss > 0 sein (Referenzleistung).")
+        month_dur = 365.25 / 12.0 * DAY      # ~30.44 d
+        times = [0.0]; vals = [0.0]; t_now = 0.0
+        for _ in range(n):
+            for P_month in monthly:
+                q_rel = float(P_month) / P_nominal
+                t_now += ramp; times.append(t_now); vals.append(q_rel)
+                hold = max(0.0, month_dur - ramp)
+                if hold > 0.0:
+                    t_now += hold; times.append(t_now); vals.append(q_rel)
+        t_now += ramp; times.append(t_now); vals.append(0.0)
+        return {
+            "t_total":  t_now,
+            "cycle_q":  (np.array(times), np.array(vals)),
+        }
+
+    # === Modus A: 4-Phasen-Zyklus (Default) ===
+    t_c   = cyc["charge_days"]                  * DAY
+    t_sc  = cyc["storage_after_charge_days"]    * DAY
+    t_d   = cyc["discharge_days"]               * DAY
+    t_sd  = cyc["storage_after_discharge_days"] * DAY
 
     phases = [
         ("charge",          t_c,  +1.0),
