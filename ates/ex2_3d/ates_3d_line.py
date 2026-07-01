@@ -362,6 +362,21 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     return msh_path
 
 
+def _safe_name(name):
+    """Physical-Group-Namen plattform- und dateisystemsicher machen.
+
+    Namen koennen Zeichen enthalten, die in Dateinamen unzulaessig sind
+    (Slash "/", Backslash, Leerzeichen, Umlaute, ...). Ein Slash wuerde
+    von pyvista als Ordnertrennung gedeutet -> FileNotFoundError. Nur
+    ASCII-Buchstaben/Ziffern sowie . _ - bleiben erhalten; alles andere
+    wird durch "_" ersetzt. So laeuft es auf Windows, Linux und macOS
+    gleichermassen.
+    """
+    keep = ("abcdefghijklmnopqrstuvwxyz"
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    return "".join(c if c in keep else "_" for c in str(name))
+
+
 def convert_mesh(cfg: dict, msh_path: Path, out_dir: Path) -> dict[str, str]:
     """gmsh-Mesh -> OGS .vtu (Domäne + Subdomänen)."""
     import ogstools as ot
@@ -375,7 +390,7 @@ def convert_mesh(cfg: dict, msh_path: Path, out_dir: Path) -> dict[str, str]:
         if name == "domain":
             fname = f"{prefix}_domain.vtu"
         else:
-            fname = f"{prefix}_physical_group_{name}.vtu"
+            fname = f"{prefix}_physical_group_{_safe_name(name)}.vtu"
         mesh.save(str(out_dir / fname), binary=True)
     return {
         "domain":          f"{prefix}_domain.vtu",

@@ -34,6 +34,21 @@ import gmsh
 import numpy as np
 
 
+def _safe_name(name):
+    """Physical-Group-Namen plattform- und dateisystemsicher machen.
+
+    Namen koennen Zeichen enthalten, die in Dateinamen unzulaessig sind
+    (Slash "/", Backslash, Leerzeichen, Umlaute, ...). Ein Slash wuerde
+    von pyvista als Ordnertrennung gedeutet -> FileNotFoundError. Nur
+    ASCII-Buchstaben/Ziffern sowie . _ - bleiben erhalten; alles andere
+    wird durch "_" ersetzt. So laeuft es auf Windows, Linux und macOS
+    gleichermassen.
+    """
+    keep = ("abcdefghijklmnopqrstuvwxyz"
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+    return "".join(c if c in keep else "_" for c in str(name))
+
+
 def msh2vtu(filename, output_path, output_prefix, dim, reindex=True, log_level="WARNING"):
     import ogstools as ot
     from pathlib import Path as _P
@@ -43,7 +58,7 @@ def msh2vtu(filename, output_path, output_prefix, dim, reindex=True, log_level="
     output_path.mkdir(parents=True, exist_ok=True)
     for name, mesh in meshes.items():
         fname = (f"{output_prefix}_domain.vtu" if name == "domain"
-                 else f"{output_prefix}_physical_group_{name}.vtu")
+                 else f"{output_prefix}_physical_group_{_safe_name(name)}.vtu")
         mesh.save(str(output_path / fname), binary=True)
 
 
