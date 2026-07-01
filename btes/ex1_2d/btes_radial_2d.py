@@ -39,11 +39,19 @@ def msh2vtu(filename, output_path, output_prefix, dim, reindex=True, log_level="
     )
     output_path = _P(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
+
+    def _safe(s):
+        # Physical-Group-Namen koennen Zeichen enthalten, die in Datei-
+        # namen unzulaessig sind (z. B. "/", "\\", Leerzeichen, Umlaute).
+        # Ein Slash im Namen wuerde von pyvista als Ordnertrennung
+        # gedeutet -> FileNotFoundError. Deshalb alles bereinigen.
+        return re.sub(r"[^A-Za-z0-9._-]", "_", str(s))
+
     for name, mesh in meshes.items():
         if name == "domain":
             fname = f"{output_prefix}_domain.vtu"
         else:
-            fname = f"{output_prefix}_physical_group_{name}.vtu"
+            fname = f"{output_prefix}_physical_group_{_safe(name)}.vtu"
         mesh.save(str(output_path / fname), binary=True)
 
 
