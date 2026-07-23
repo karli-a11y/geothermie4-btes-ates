@@ -964,9 +964,11 @@ def make_plots(cfg: dict, out_dir: Path, rate_mult=None) -> None:
     fig, axs = plt.subplots(2, 1, figsize=(13, 8))
     plot_T(axs[0], 0, times[-1], True)
     axs[0].set_title("ATES 2D radial — T(t) an Beobachtungspunkten (Brunnentemp. = dynamische Entnahmetemperatur)")
-    z0 = max(0, times[-1] - 3*YEAR)
+    ny_zoom = min(3, n_cyc)
+    z0 = max(0, times[-1] - ny_zoom*YEAR)
     plot_T(axs[1], z0, times[-1], False)
-    axs[1].set_title(f"Zoom: letzte 3 Betriebsjahre")
+    axs[1].set_title("Zoom: gesamter Zeitraum" if ny_zoom >= n_cyc
+                     else f"Zoom: letzte {ny_zoom} Betriebsjahre")
     fig.tight_layout()
     fig.savefig(figdir / "T_vs_time.png", dpi=130); plt.close(fig)
     print("  saved T_vs_time.png")
@@ -1088,15 +1090,17 @@ def make_plots(cfg: dict, out_dir: Path, rate_mult=None) -> None:
                                np.abs(P_arr) * fac * (well - T_amb) / dT_ref, 0.0)
             demand_p = np.where(is_prod, np.abs(P_arr), 0.0)
             fig, ax = plt.subplots(figsize=(13, 4.6))
-            z0 = max(0, times[-1] - 4*YEAR)
+            ny_d = min(4, n_cyc)
+            z0 = max(0, times[-1] - ny_d*YEAR)
             sel = times >= z0
             ax.plot(times[sel], demand_p[sel]/1e3, color="0.4", lw=1.6, ls="--",
                     label="Geforderte Förderleistung |P|")
             ax.plot(times[sel], deliver[sel]/1e3, color="#1f77b4", lw=1.6,
                     label="Gelieferte Förderleistung (bedarfsgeführt)")
             ax.set_xlabel("Zeit [Tage]"); ax.set_ylabel("Förderleistung [kW]")
+            span = "gesamter Zeitraum" if ny_d >= n_cyc else f"letzte {ny_d} Jahre"
             ax.set_title("ATES 2D radial — Bedarfsgeführte Förderung: gelieferte vs. geforderte Leistung "
-                         "(letzte 4 Jahre)")
+                         f"({span})")
             ax.grid(alpha=0.3); ax.legend(loc="upper right", fontsize=9)
             ax.set_ylim(bottom=0)
             fig.tight_layout()
