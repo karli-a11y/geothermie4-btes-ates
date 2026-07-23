@@ -972,6 +972,35 @@ def make_plots(cfg: dict, out_dir: Path, rate_mult=None) -> None:
     print("  saved T_vs_time.png")
 
     # ---------------------------------------------------------------
+    #  2b) Vollständige Brunnentemperatur-Kurve über den Zeitraum
+    #      (= Injektionstemperatur bei Beladung / dynamische Entnahme-
+    #       temperatur bei Förderung). Daten auch in _timeseries.csv.
+    # ---------------------------------------------------------------
+    T_inj = cfg["operation"]["T_hot_K"]
+    well = np.array(series[list(probes.keys())[0]])
+    fig, ax = plt.subplots(figsize=(13, 4.6))
+    if monthly:
+        for y in range(n_cyc):
+            for mo in range(12):
+                t0m = y * YEAR + mo * month_dur
+                if monthly_P[mo] > 0:
+                    ax.axvspan(t0m, t0m + month_dur, color="red",  alpha=0.06)
+                elif monthly_P[mo] < 0:
+                    ax.axvspan(t0m, t0m + month_dur, color="blue", alpha=0.06)
+    ax.plot(times, well - 273.15, color="#b22222", lw=1.6, zorder=3,
+            label="Brunnentemperatur")
+    ax.axhline(T_inj - 273.15, color="k", lw=0.8, ls="--", label=f"T_inj = {T_inj-273.15:.0f} °C")
+    ax.axhline(T0 - 273.15,   color="k", lw=0.8, ls=":",  label=f"T_amb = {T0-273.15:.0f} °C")
+    ax.set_xlabel("Zeit [Tage]"); ax.set_ylabel("Brunnentemperatur [°C]")
+    ax.set_title("ATES 2D radial — Brunnentemperatur über den gesamten Zeitraum\n"
+                 "(Beladung/rot: Injektion bei T_inj — Förderung/blau: dynamische Entnahmetemperatur)")
+    ax.grid(alpha=0.3); ax.legend(loc="best", fontsize=9)
+    ax.set_xlim(0, times[-1]); ax.set_ylim(T0 - 273.15 - 4, T_inj - 273.15 + 4)
+    fig.tight_layout()
+    fig.savefig(figdir / "well_temperature.png", dpi=130); plt.close(fig)
+    print("  saved well_temperature.png")
+
+    # ---------------------------------------------------------------
     #  3) Energiebilanz: gespeicherte Energie + Soll (kumuliert)
     # ---------------------------------------------------------------
     fig, ax = plt.subplots(figsize=(13, 4.8))
