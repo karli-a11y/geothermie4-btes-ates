@@ -839,7 +839,8 @@ def make_plots(cfg: dict, out_dir: Path, rate_mult=None) -> None:
     except ImportError:
         print("pyvista/matplotlib fehlt, Plots uebersprungen."); return
 
-    figdir = out_dir / "figures"; figdir.mkdir(exist_ok=True)
+    # Plots in den konventionellen figures/-Ordner der Übung (nicht out/).
+    figdir = Path(__file__).parent / "figures"; figdir.mkdir(exist_ok=True)
     prefix = cfg["output"]["prefix"]
     files = sorted(out_dir.glob(f"{prefix}_ts_*_t_*.vtu"),
                    key=lambda p: int(re.search(r"_ts_(\d+)_", p.name).group(1)))
