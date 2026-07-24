@@ -26,105 +26,117 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import gmsh
+import re
 import numpy as np
 
 # ======================================================================
 #  CONFIG  --  hier alles anpassen
 # ======================================================================
 CONFIG: dict = {
+    # An MOOSE-ATES + das validierte 2D-Modell angelehnt, aber echtes 3D mit
+    # regionaler Grundwasserströmung (die Fahne driftet stromab).
     "domain": {
-        "size_x_m":   200.0,    # Ausdehnung in x [m]
-        "size_y_m":   200.0,    # Ausdehnung in y [m]
+        "size_x_m":   400.0,    # Strömungsrichtung (Platz für Fahnendrift)
+        "size_y_m":   250.0,    # quer
         "z_base_m":     0.0,    # untere Modellgrenze (z-Koordinate)
     },
     "layers": {
-        "caprock_bottom_thickness_m": 30.0,
-        "aquifer_thickness_m":        30.0,
-        "caprock_top_thickness_m":    20.0,
+        # Deckgestein dick genug, dass die Wärmeleitfront den auf T_amb fixierten
+        # Rand nicht erreicht (bei 2 Jahren ~18 m -> 40 m je Seite reicht klar).
+        "caprock_bottom_thickness_m": 40.0,
+        "aquifer_thickness_m":        20.0,
+        "caprock_top_thickness_m":    40.0,
     },
     "wells": {
-        # Single-Well-Anlage: ein aktiver Brunnen. Der Lateralrand des
-        # Aquifers wird als p=0-Outlet gesetzt, damit das am Brunnen
-        # injizierte Wasser entweichen kann.
+        # Single-Well-Anlage. Brunnen als kleine Filtersäule über die volle
+        # Aquiferhöhe (Offsets 0). Der Lateralrand des Aquifers ist Druck-Outlet
+        # (bzw. GW-Gradient), damit injiziertes Wasser entweichen kann.
         "hot_well_xy":   ( 0.0,  0.0),     # (x, y) Lage des Brunnens
-        "screen_bottom_offset_m": 5.0,     # Abstand Filterunterkante vom Aquiferboden
-        "screen_top_offset_m":    5.0,     # Abstand Filteroberkante von Aquiferdecke
-        "screen_dx_m":             2.0,    # x-Ausdehnung des Filtervolumens
-        "screen_dy_m":             2.0,    # y-Ausdehnung des Filtervolumens
-        "screen_permeability_m2":  1.0e-9, # Filterkies (>> Aquifer)
+        "screen_bottom_offset_m": 0.0,     # Filter über volle Aquiferhöhe
+        "screen_top_offset_m":    0.0,
+        "screen_dx_m":             1.0,    # x-Ausdehnung des Filtervolumens
+        "screen_dy_m":             1.0,    # y-Ausdehnung des Filtervolumens
+        "screen_permeability_m2":  1.0e-11,# = Aquifer (Filter voll durchlässig)
+        # Förderregelung wie im 2D: "fixed" (feste Rate) oder "demand"
+        # (bedarfsgeführt, iterativ). Im 3D ist ein Lauf teuer (~1.5 h) →
+        # "fixed" als Default; "demand" macht n Wiederholungsläufe.
+        "production_control":      "fixed",
+        "max_rate_factor":         6.0,
+        "demand_iterations":       3,
     },
     # ------------------------------------------------------------------
-    # REGIONALE GRUNDWASSERSTRÖMUNG (optional)
+    # REGIONALE GRUNDWASSERSTRÖMUNG  (das 3D-Kernmerkmal)
     # ------------------------------------------------------------------
-    # Eine grossräumige Hintergrund-Strömung wird durch einen linearen
-    # Druckgradient auf der Lateral-Aquifer-Fläche aufgeprägt
-    # (Dirichlet-BC mit p(x, y) = ρ_f · g · i · cos(α) · x + ...).
-    # Die Plume wird in Hauptströmungs-Richtung verschoben.
-    # Setze enable = False, um einen "ruhenden" Aquifer zu simulieren
-    # (Default p = 0 als reines Outlet, kein Gradient).
+    # Ein linearer Druckgradient auf der Lateral-Aquifer-Fläche prägt eine
+    # großräumige Hintergrundströmung auf → die thermische Fahne driftet in
+    # Strömungsrichtung. Kombiniert mit dem hydrostatischen Vertikaldruck.
     # ------------------------------------------------------------------
     "regional_gw": {
-        "enable":            False,
-        "gradient_m_per_m":  1.0e-3,       # hydraulischer Gradient (dimensionslos)
+        "enable":            True,
+        "gradient_m_per_m":  2.0e-3,       # hydraulischer Gradient (dimensionslos)
         "direction_deg":     0.0,          # 0° = +x, 90° = +y, ...
     },
+    # Strukturiertes/feineres Netz: fein am Brunnen und stromab (Driftbahn),
+    # gröber im Fernfeld.  (Tetraeder mit Distance-Verfeinerung, konforme
+    # Schichtgrenzen durch OCC-Fragmentierung.)
     "mesh": {
-        "size_in_well_m":       0.8,       # Elementgröße im Filtervolumen
-        "size_near_wells_m":    2.0,
-        "size_far_m":          12.0,
-        "well_size_radius_m":  10.0,       # bis zu diesem Radius: feinmaschig
-        "well_size_radius_far_m": 35.0,    # ab dem: grobmaschig
+        "size_in_well_m":       0.5,
+        "size_near_wells_m":    1.7,       # Fahnen-/Driftregion fein
+        "size_far_m":          20.0,       # Fernfeld grob (plumefern)
+        "well_size_radius_m":  22.0,       # fein bis hierher (deckt Fahne + Drift)
+        "well_size_radius_far_m": 65.0,    # ab dem: grob
     },
     "materials": {
-        # MaterialID 0 = aquifer, 1 = caprock_top, 2 = caprock_bottom
+        # MOOSE-Werte: Aquifer & Deckgestein gleiche thermische Eigenschaften,
+        # nur Permeabilität unterscheidet sich (Deckgestein ~strömungsdicht).
         "aquifer": {
-            "permeability_m2": 1.0e-12,
+            "permeability_m2": 1.0e-11,
             "porosity":        0.25,
             "rho_s_kg_m3":  2650.0,
-            "cp_s_J_kgK":   1000.0,
+            "cp_s_J_kgK":    800.0,
             "lambda_s_W_mK":   3.0,
         },
         "caprock_top": {
-            "permeability_m2": 1.0e-18,
-            "porosity":        0.05,
-            "rho_s_kg_m3":  2700.0,
-            "cp_s_J_kgK":    900.0,
-            "lambda_s_W_mK":   2.0,
+            "permeability_m2": 1.0e-16,
+            "porosity":        0.25,
+            "rho_s_kg_m3":  2650.0,
+            "cp_s_J_kgK":    800.0,
+            "lambda_s_W_mK":   3.0,
         },
         "caprock_bottom": {
-            "permeability_m2": 1.0e-18,
-            "porosity":        0.05,
-            "rho_s_kg_m3":  2700.0,
-            "cp_s_J_kgK":    900.0,
-            "lambda_s_W_mK":   2.0,
+            "permeability_m2": 1.0e-16,
+            "porosity":        0.25,
+            "rho_s_kg_m3":  2650.0,
+            "cp_s_J_kgK":    800.0,
+            "lambda_s_W_mK":   3.0,
         },
     },
     "fluid": {
+        # Auftrieb wie im 2D: T-abhängige Dichte & Viskosität.
         "rho_ref_kg_m3":  1000.0,
-        "T_ref_K":         293.15,
-        "beta_1_per_K":    0.0,        # >0 aktiviert Linear-Dichte ρ(T)=ρ_ref(1-β(T-T_ref))
-        "viscosity_Pa_s":  1.0e-3,
+        "T_ref_K":         283.15,
+        "beta_1_per_K":   -4.0e-4,     # thermische Ausdehnung (heißes Wasser leichter)
+        "viscosity_Pa_s":       1.3e-3,
+        "visc_slope_1_per_K":  -1.28e-2,
         "cp_J_kgK":        4180.0,
         "lambda_W_mK":     0.6,
     },
     "dispersion": {
-        # Mechanische thermische Dispersivität – stabilisiert advektiv dominierten
-        # Transport (hoher Péclet). Realistisch für poröse Medien α_L ≈ 0.1–10 m.
         "alpha_L_m": 1.0,
         "alpha_T_m": 0.1,
     },
     "initial": {
-        "T_K":  283.15,
-        "p_Pa": 0.0,
+        "T_K":  283.15,      # 10 °C Umgebung (= fluid.T_ref)
+        "p_Pa": 1.0e5,       # Referenzdruck Oberkante (hydrostatisch nach unten)
     },
     "operation": {
-        "mass_flow_rate_kg_s": 0.5,    # Massenstrom am Brunnen (gesamt über alle Filterpunkte)
-        "T_hot_K":  353.15,            # Vorlauftemperatur Beladung, 80 °C
-        # Spezifische Speicherzahl der Phasen (1/Pa). Werte > 0 sind nötig,
-        # damit die Druckgleichung transient ist – sonst löst die Punktquelle
-        # zu Druck-Singularitäten auf.
-        "fluid_storage_1_per_Pa": 4.5e-10,    # H2O Kompressibilität
-        "solid_storage_1_per_Pa": 1.0e-10,    # Korngerüst
+        # T_hot_K = Injektionstemperatur T_inj; Massenstrom folgt aus der
+        # Monatsleistung ṁ = P/(cp·(T_inj−T_amb)).
+        "mass_flow_rate_kg_s": 3.0,    # nur Referenz im 4-Phasen-Modus
+        "T_hot_K":  333.15,            # T_inj = 60 °C
+        "T_cold_K": 283.15,
+        "fluid_storage_1_per_Pa": 4.5e-10,
+        "solid_storage_1_per_Pa": 1.0e-10,
     },
     # ------------------------------------------------------------------
     # ZYKLEN – HIER FÜR STUDIERENDE
@@ -154,23 +166,26 @@ CONFIG: dict = {
     # Beladung vor (sonst T_hot_K). Auf None lassen für Modus A.
     # ------------------------------------------------------------------
     "cycles": {
-        "n_cycles":                     3,     # Anzahl Zyklen (A) bzw. Jahre (B)
-        "charge_days":                 90,     # Phase 1: Beladung (Tage)
-        "storage_after_charge_days":    0,     # Phase 2: Pause nach Beladung (Tage)
-        "discharge_days":              90,     # Phase 3: Förderung (Tage)
-        "storage_after_discharge_days": 0,     # Phase 4: Pause nach Förderung (Tage)
-        "ramp_days":                    1.0,   # Sanfte Übergangsrampe zwischen Phasen (Tage)
-        # --- Modus B: Monatsprofil (auf None für Modus A) ---
-        # Beispiel (Beladung Sommer, Förderung Winter):
-        #   "monthly_power_W": [+80_000, +60_000, +30_000, 0, 0, 0,
-        #                         0, 0, -30_000, -60_000, -90_000, -90_000],
-        "monthly_power_W":              None,
+        "n_cycles":                     2,     # Betriebsjahre (Modus B)
+        "charge_days":                 90,     # Modus A: Beladung (Tage)
+        "storage_after_charge_days":    0,
+        "discharge_days":              90,
+        "storage_after_discharge_days": 0,
+        "ramp_days":                    3.0,   # Übergangsrampe zwischen Monaten
+        # --- Modus B: Monatsprofil (AKTIV) — P[W] Jan…Dez, ΣP≈0 ---
+        # Aus P folgt die Pumprate ṁ = P/(cp·(T_inj−T_amb)); Spitze ~0.5 MW
+        # → ṁ ≈ 2.4 kg/s. Beliebig editierbar.
+        "monthly_power_W": [
+            -400_000, -350_000, -120_000, 0,
+            +250_000, +450_000, +500_000, +400_000, +120_000,
+            -180_000, -320_000, -350_000,
+        ],
         "monthly_T_inj_K":              None,   # optional: 12 Vorlauftemperaturen [K]
     },
     "time": {
-        "dt_seconds":           86400.0,    # 1 Tag
-        "output_every_n_steps": 1,
-        "gravity":              False,       # True = z-Body-Force (-9.81)
+        "dt_seconds":           86400.0,    # 1 Tag (feine Zeitauflösung)
+        "output_every_n_steps": 5,
+        "gravity":              True,        # Auftrieb (heißes Wasser steigt)
     },
     "output": {
         "prefix":    "ates_3d",
@@ -178,7 +193,10 @@ CONFIG: dict = {
         "variables": ["T", "p", "darcy_velocity"],
     },
     "solver": {
-        "linear_tol":   1.0e-12,
+        # BiCGSTAB+ILUT (schnell) oder "SparseLU" (direkt, robust).
+        "solver_type":  "BiCGSTAB",
+        "precon_type":  "ILUT",
+        "linear_tol":   1.0e-10,
         "linear_iter":  10000,
         "nonlinear_iter": 20,
         "rel_tol_T":   1.0e-4,
@@ -387,98 +405,87 @@ def convert_mesh(cfg: dict, msh_path: Path, out_dir: Path) -> dict[str, str]:
 # ======================================================================
 #  Zyklus-Kurven
 # ======================================================================
-def build_cycle_curves(cfg: dict) -> dict:
-    """Zeit-stetige Kurven für Massenquelle und Brunnen-Dirichlet-T.
+def build_cycle_curves(cfg: dict, rate_mult=None) -> dict:
+    """Normierte Pump-/Leistungskurve g(t) ∈ [−1,1] + Beladungs-Intervalle
+    (wie im validierten 2D-Modell).
 
-    Mass-Curve:  +1 Injektion, -1 Förderung, 0 Pause.
-    T-Curve:     Skalierungs-Faktor für den Dirichlet-Wert am Brunnen.
-      - Während Injektion = 1.0 (Brunnen liegt auf T_inj)
-      - Sonst T0/T_inj   (Brunnen ruht auf Hintergrund-T0)
+    Brunnenmodell (physikalisch korrekt für OGS-HT): Massenquelle IMMER aktiv
+    (∝ P, /ρ in build_prj); Injektionstemperatur per Dirichlet nur in den
+    Beladungs-Intervallen; Förderung = reine Massensenke (dynamische Entnahme-
+    temperatur). rate_mult skaliert die Förderrate je Monat (Bedarfsführung).
     """
-    cyc   = cfg["cycles"]
-    n     = cyc["n_cycles"]
-    ramp  = max(60.0, cyc["ramp_days"] * DAY)
+    cyc  = cfg["cycles"]
+    n    = cyc["n_cycles"]
+    ramp = max(60.0, cyc["ramp_days"] * DAY)
+    T0     = cfg["initial"]["T_K"]
+    T_hot  = cfg["operation"]["T_hot_K"]
+    cp_f   = cfg["fluid"]["cp_J_kgK"]
+    dT_ref = T_hot - T0
+    if dT_ref <= 0:
+        raise ValueError("T_hot_K muss > initial.T_K sein (ΔT_ref > 0).")
 
-    T0    = cfg["initial"]["T_K"]
-    T_hot = cfg["operation"]["T_hot_K"]
-    rh = T0 / T_hot
+    def _piecewise(seg_values, seg_durs):
+        times = [0.0]; vals = [0.0]; t_now = 0.0
+        for _ in range(n):
+            for g, dur in zip(seg_values, seg_durs):
+                if dur <= 0:
+                    continue
+                t_now += ramp
+                times.append(t_now); vals.append(g)
+                hold = max(0.0, dur - ramp)
+                if hold > 0:
+                    t_now += hold
+                    times.append(t_now); vals.append(g)
+        t_now += ramp
+        times.append(t_now); vals.append(0.0)
+        return np.array(times), np.array(vals), t_now
 
-    # === Modus B: Monatsprofil (überschreibt 4-Phasen-Logik) ===
+    def _merge(ivs):
+        m = []
+        for t0, t1, Ti in ivs:
+            if m and abs(m[-1][1] - t0) < 1e-6 and m[-1][2] == Ti:
+                m[-1] = (m[-1][0], t1, Ti)
+            else:
+                m.append((t0, t1, Ti))
+        return m
+
     monthly_P = cyc.get("monthly_power_W")
     if monthly_P is not None:
         assert len(monthly_P) == 12, "cycles.monthly_power_W muss 12 Werte enthalten."
         monthly_T = cyc.get("monthly_T_inj_K")
-        if monthly_T is not None:
-            assert len(monthly_T) == 12, "cycles.monthly_T_inj_K muss 12 Werte enthalten."
-        cp_f  = cfg["fluid"]["cp_J_kgK"]
-        m_nom = cfg["operation"]["mass_flow_rate_kg_s"]
-        if m_nom == 0:
-            raise ValueError("operation.mass_flow_rate_kg_s muss > 0 sein (Referenz-Massenstrom).")
-        # Referenzleistung: Massenstrom bei Nenn-Vorlauf gegen Hintergrund-T0
-        P_ref = m_nom * cp_f * (T_hot - T0)
-        if P_ref == 0:
-            raise ValueError("T_hot_K muss ≠ T_K sein (Referenzleistung > 0).")
-        month_dur = 365.25 / 12.0 * DAY      # ~30.44 d
-        times = [0.0]; v_m = [0.0]; v_t = [rh]; t_now = 0.0
-        for _ in range(n):
-            for m, P_month in enumerate(monthly_P):
-                # Massenstrom linear zur Speicherleistung; Vorzeichen = Richtung
-                # (+ injizieren/laden, − entnehmen/fördern).
-                m_rel = float(P_month) / P_ref
-                if P_month > 0:                      # Beladung: Vorlauf-T vorgeben
-                    T_inj = monthly_T[m] if monthly_T is not None else T_hot
-                    T_rel = T_inj / T_hot
-                else:                                # Förderung/Pause: Brunnen auf T0
-                    T_rel = rh
-                t_now += ramp
-                times.append(t_now); v_m.append(m_rel); v_t.append(T_rel)
-                hold = max(0.0, month_dur - ramp)
-                if hold > 0.0:
-                    t_now += hold
-                    times.append(t_now); v_m.append(m_rel); v_t.append(T_rel)
-        t_now += ramp
-        times.append(t_now); v_m.append(0.0); v_t.append(rh)
-        return {
-            "t_total":        t_now,
-            "cycle_mass_hot": (np.array(times), np.array(v_m)),
-            "cycle_T_hot":    (np.array(times), np.array(v_t)),
-        }
+        P = np.asarray(monthly_P, dtype=float)
+        P_nom = float(np.max(np.abs(P)))
+        if P_nom == 0.0:
+            raise ValueError("cycles.monthly_power_W enthält nur Nullen.")
+        mdot_nom  = P_nom / (cp_f * dT_ref)
+        month_dur = 365.25 / 12.0 * DAY
+        g_vals = (P / P_nom).tolist()
+        if rate_mult is not None:
+            g_vals = [g * (rate_mult[m] if P[m] < 0 else 1.0) for m, g in enumerate(g_vals)]
+        times, vals, t_tot = _piecewise(g_vals, [month_dur] * 12)
+        ivs = []
+        for y in range(n):
+            for m in range(12):
+                if P[m] > 0.0:
+                    k = y * 12 + m
+                    Ti = float(monthly_T[m]) if monthly_T is not None else T_hot
+                    ivs.append((k * month_dur, (k + 1) * month_dur, Ti))
+        return {"t_total": t_tot, "cycle_power": (times, vals),
+                "charge_intervals": _merge(ivs), "P_nom_W": P_nom,
+                "mdot_nom_kg_s": mdot_nom, "mode": "monthly"}
 
-    # === Modus A: 4-Phasen-Zyklus (Default) ===
-    t_c   = cyc["charge_days"]                  * DAY
-    t_sc  = cyc["storage_after_charge_days"]    * DAY
-    t_d   = cyc["discharge_days"]               * DAY
-    t_sd  = cyc["storage_after_discharge_days"] * DAY
-
-    # Phasen: (Name, Dauer, mass, T_curve)
-    phases = [
-        ("charge",          t_c,  +1.0, 1.0),
-        ("storage_after_c", t_sc,  0.0, rh),
-        ("discharge",       t_d,  -1.0, rh),
-        ("storage_after_d", t_sd,  0.0, rh),
-    ]
-
-    times = [0.0]
-    v_m, v_t = [0.0], [rh]
-    t_now = 0.0
-    for _cyc in range(n):
-        for _name, dur, m, th in phases:
-            if dur <= 0.0:
-                continue
-            t_now += ramp
-            times.append(t_now); v_m.append(m); v_t.append(th)
-            hold = max(0.0, dur - ramp)
-            if hold > 0.0:
-                t_now += hold
-                times.append(t_now); v_m.append(m); v_t.append(th)
-    t_now += ramp
-    times.append(t_now); v_m.append(0.0); v_t.append(rh)
-
-    return {
-        "t_total":        t_now,
-        "cycle_mass_hot": (np.array(times), np.array(v_m)),
-        "cycle_T_hot":    (np.array(times), np.array(v_t)),
-    }
+    # === 4-Phasen-Modus ===
+    mdot_nom = cfg["operation"]["mass_flow_rate_kg_s"]
+    P_nom    = mdot_nom * cp_f * dT_ref
+    durs = [cyc["charge_days"] * DAY, cyc["storage_after_charge_days"] * DAY,
+            cyc["discharge_days"] * DAY, cyc["storage_after_discharge_days"] * DAY]
+    times, vals, t_tot = _piecewise([+1.0, 0.0, -1.0, 0.0], durs)
+    cyc_dur = sum(durs)
+    charge_intervals = [(y * cyc_dur, y * cyc_dur + durs[0], T_hot)
+                        for y in range(n) if durs[0] > 0]
+    return {"t_total": t_tot, "cycle_power": (times, vals),
+            "charge_intervals": charge_intervals, "P_nom_W": P_nom,
+            "mdot_nom_kg_s": mdot_nom, "mode": "phases"}
 
 
 # ======================================================================
@@ -503,21 +510,32 @@ def _add_phase_aqueous(phases: ET.Element, fluid: dict, op: dict) -> None:
     _se(ph, "type", "AqueousLiquid")
     props = _se(ph, "properties")
 
-    # Dichte: optional linear in T
+    # Dichte: T-abhängig ρ(T)=ρ_ref(1+β(T−T_ref)) für Auftrieb (β<0), sonst const
     p = _se(props, "property")
     _se(p, "name", "density")
-    if fluid["beta_1_per_K"] > 0.0:
+    beta = fluid.get("beta_1_per_K", 0.0)
+    if abs(beta) > 1e-12:
         _se(p, "type", "Linear")
         _se(p, "reference_value", fluid["rho_ref_kg_m3"])
         iv = _se(p, "independent_variable")
         _se(iv, "variable_name", "temperature")
         _se(iv, "reference_condition", fluid["T_ref_K"])
-        _se(iv, "slope", -fluid["rho_ref_kg_m3"] * fluid["beta_1_per_K"])
+        _se(iv, "slope", fluid["beta_1_per_K"])
     else:
         _se(p, "type", "Constant")
         _se(p, "value", fluid["rho_ref_kg_m3"])
 
-    _add_const_property(props, "viscosity",              fluid["viscosity_Pa_s"])
+    # Viskosität: optional T-abhängig (Linear) — verstärkt den Auftrieb
+    vslope = fluid.get("visc_slope_1_per_K")
+    if vslope:
+        pv = _se(props, "property"); _se(pv, "name", "viscosity"); _se(pv, "type", "Linear")
+        _se(pv, "reference_value", fluid["viscosity_Pa_s"])
+        iv = _se(pv, "independent_variable")
+        _se(iv, "variable_name", "temperature")
+        _se(iv, "reference_condition", fluid["T_ref_K"])
+        _se(iv, "slope", vslope)
+    else:
+        _add_const_property(props, "viscosity", fluid["viscosity_Pa_s"])
     _add_const_property(props, "specific_heat_capacity", fluid["cp_J_kgK"])
     _add_const_property(props, "thermal_conductivity",   fluid["lambda_W_mK"])
     _add_const_property(props, "storage",                op["fluid_storage_1_per_Pa"])
@@ -591,8 +609,11 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     dy_w = cfg["wells"]["screen_dy_m"]
     V_well = dx_w * dy_w * h_screen
 
-    Q_total = op["mass_flow_rate_kg_s"]                  # kg/s gesamt am Brunnen
-    q_v_mass = Q_total / V_well                          # kg/(m³·s) – Druckeq.
+    # Basis-Amplitude der Massenquelle. WICHTIG: Der HT-Druck-Quellterm ist
+    # VOLUMETRISCH [1/s], nicht massenbasiert -> durch ρ_f teilen (sonst ~1000×
+    # Über-Injektion). cycle_power ∈[−1,1] skaliert zeitabhängig.
+    rho_f = fluid["rho_ref_kg_m3"]
+    q_mass_amp = curves["mdot_nom_kg_s"] / rho_f / V_well   # 1/s (= m³/m³/s)
 
     root = ET.Element("OpenGeoSysProject")
 
@@ -680,33 +701,38 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     # -- Parameters
     params = _se(root, "parameters")
     _const_param(params, "T0", init["T_K"])
-    _const_param(params, "p0", init["p_Pa"])
 
-    # Regionaler GW-Druckgradient als Function-Parameter
+    # Druck: bei Gravitation hydrostatisch p(z)=p_top+ρ_ref·g·(z_top−z); die
+    # regionale GW-Strömung ist ein zusätzlicher lateraler Gradient in x/y.
+    z_top = (cfg["domain"]["z_base_m"] + cfg["layers"]["caprock_bottom_thickness_m"]
+             + cfg["layers"]["aquifer_thickness_m"] + cfg["layers"]["caprock_top_thickness_m"])
+    rho0  = fluid["rho_ref_kg_m3"]; p_top = init["p_Pa"]
+    hydro = (f"{p_top:.6g} + {rho0*9.81:.6g}*({z_top:.6g} - z)"
+             if cfg["time"]["gravity"] else f"{p_top:.6g}")
+    p_el = _se(params, "parameter"); _se(p_el, "name", "p0"); _se(p_el, "type", "Function")
+    _se(p_el, "expression", hydro)
     gw = cfg.get("regional_gw", {})
     if gw.get("enable", False):
         import math
-        rho_g = cfg["fluid"]["rho_ref_kg_m3"] * 9.81   # Pa/m je m hyd. Höhe
-        i     = float(gw["gradient_m_per_m"])
-        alpha = math.radians(float(gw["direction_deg"]))
-        gx    = -rho_g * i * math.cos(alpha)           # Druck fällt in Strömungsrichtung
-        gy    = -rho_g * i * math.sin(alpha)
-        p = _se(params, "parameter")
-        _se(p, "name", "p_lateral_gw")
-        _se(p, "type", "Function")
-        _se(p, "expression", f"{init['p_Pa']} + ({gx:.6g})*x + ({gy:.6g})*y")
+        rho_g = rho0 * 9.81
+        i = float(gw["gradient_m_per_m"]); alpha = math.radians(float(gw["direction_deg"]))
+        gx = -rho_g * i * math.cos(alpha); gy = -rho_g * i * math.sin(alpha)
+        p_lat = _se(params, "parameter"); _se(p_lat, "name", "p_lateral"); _se(p_lat, "type", "Function")
+        _se(p_lat, "expression", f"{hydro} + ({gx:.6g})*x + ({gy:.6g})*y")
 
-    # Basisamplituden + curve-skalierte Parameter
-    _const_param(params, "q_mass_amp", q_v_mass)
-    _const_param(params, "T_hot_amp",  op["T_hot_K"])
-    _curve_scaled_param(params, "q_mass_hot", "cycle_mass_hot", "q_mass_amp")
-    _curve_scaled_param(params, "T_hot_well", "cycle_T_hot",    "T_hot_amp")
+    # Massenquelle (volumetrisch, /ρ) — Kurve cycle_power ∈[−1,1]
+    _const_param(params, "q_mass_amp", q_mass_amp)
+    _curve_scaled_param(params, "q_mass_well", "cycle_power", "q_mass_amp")
+    # Injektionstemperatur(en) für die Beladungs-Dirichlet-BCs
+    tinj_values = sorted({round(iv[2], 6) for iv in curves["charge_intervals"]})
+    tinj_param = {}
+    for idx, Ti in enumerate(tinj_values):
+        nm = "T_inj" if len(tinj_values) == 1 else f"T_inj_{idx}"
+        _const_param(params, nm, Ti); tinj_param[round(Ti, 6)] = nm
 
     # -- Curves
     cv = _se(root, "curves")
-    for name in ("cycle_mass_hot", "cycle_T_hot"):
-        t, v = curves[name]
-        _curve_xml(cv, name, t, v)
+    t, v = curves["cycle_power"]; _curve_xml(cv, "cycle_power", t, v)
 
     # -- Process variables
     pvars = _se(root, "process_variables")
@@ -724,14 +750,17 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         _se(bc, "mesh",      Path(mesh_files[face]).stem)
         _se(bc, "type",      "Dirichlet")
         _se(bc, "parameter", "T0")
-    # Brunnentemperatur Dirichlet-BC auf Filterbox-Volumen.
-    # (Hinweis: Eine 2nd-type/Neumann-Variante auf der Brunnenhülle ist
-    # physikalisch sauberer, in OGS HT auf inneren Trennflächen aber
-    # numerisch instabil ohne SUPG-artige Stabilisierung.)
-    bc = _se(bcs_T, "boundary_condition")
-    _se(bc, "mesh",      Path(mesh_files["hot_well_vol"]).stem)
-    _se(bc, "type",      "Dirichlet")
-    _se(bc, "parameter", "T_hot_well")
+    # Brunnen: Injektionstemperatur T_inj NUR während der Beladungs-Intervalle
+    # (DirichletWithinTimeInterval). Bei Förderung/Ruhe kein T-Zwang -> die
+    # Entnahmetemperatur wird dynamisch berechnet.
+    well_mesh_T = Path(mesh_files["hot_well_vol"]).stem
+    for t0, t1, Ti in curves["charge_intervals"]:
+        bc = _se(bcs_T, "boundary_condition")
+        _se(bc, "mesh", well_mesh_T)
+        _se(bc, "type", "DirichletWithinTimeInterval")
+        _se(bc, "parameter", tinj_param[round(Ti, 6)])
+        ti = _se(bc, "time_interval")
+        _se(ti, "start", f"{t0:.6e}"); _se(ti, "end", f"{t1:.6e}")
 
     # Druck
     pv_p = _se(pvars, "process_variable")
@@ -753,14 +782,14 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         _se(bc, "mesh",      Path(mesh_files["lateral_aquifer"]).stem)
         _se(bc, "type",      "Dirichlet")
         if cfg.get("regional_gw", {}).get("enable", False):
-            _se(bc, "parameter", "p_lateral_gw")
+            _se(bc, "parameter", "p_lateral")
         else:
             _se(bc, "parameter", "p0")
     sts_p = _se(pv_p, "source_terms")
     st = _se(sts_p, "source_term")
     _se(st, "mesh",      Path(mesh_files["hot_well_vol"]).stem)
     _se(st, "type",      "Volumetric")
-    _se(st, "parameter", "q_mass_hot")
+    _se(st, "parameter", "q_mass_well")
 
     # -- Solvers
     nls = _se(root, "nonlinear_solvers")
@@ -774,12 +803,14 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     ls = _se(lss, "linear_solver")
     _se(ls, "name", "general_linear_solver")
     eig = _se(ls, "eigen")
-    # BiCGSTAB+ILUT mit Skalierung: iterativ, skaliert gut auf größere Netze.
-    # `scaling=true` gleicht die unterschiedlichen Größenordnungen von T und p aus.
-    _se(eig, "solver_type",        "BiCGSTAB")
-    _se(eig, "precon_type",        "ILUT")
-    _se(eig, "max_iteration_step", sol["linear_iter"])
-    _se(eig, "error_tolerance",    sol["linear_tol"])
+    # Solver konfigurierbar: iterativ (BiCGSTAB+ILUT, skaliert gut auf große Netze)
+    # oder direkt (SparseLU, robust). scaling=true gleicht T/p-Größenordnungen aus.
+    stype = sol.get("solver_type", "BiCGSTAB")
+    _se(eig, "solver_type", stype)
+    if stype != "SparseLU":
+        _se(eig, "precon_type",        sol.get("precon_type", "ILUT"))
+        _se(eig, "max_iteration_step", sol["linear_iter"])
+        _se(eig, "error_tolerance",    sol["linear_tol"])
     _se(eig, "scaling",            "true")
 
     # Schreiben (mit XML-Deklaration und Einrückung)
@@ -817,6 +848,41 @@ def run_ogs(prj_path: Path) -> int:
     return subprocess.call(cmd)
 
 
+def measure_produced_T(cfg: dict, out_dir: Path) -> dict:
+    """|P|-gewichtete mittlere Brunnentemperatur je Fördermonat (P<0),
+    gemittelt über die eingeschwungenen Jahre (zweite Laufhälfte)."""
+    import pyvista as pv
+    prefix = cfg["output"]["prefix"]
+    files = sorted(out_dir.glob(f"{prefix}_ts_*.vtu"),
+                   key=lambda p: int(re.search(r"_ts_(\d+)_", p.name).group(1)))
+    if not files:
+        return {}
+    z_mid = (cfg["domain"]["z_base_m"] + cfg["layers"]["caprock_bottom_thickness_m"]
+             + cfg["layers"]["aquifer_thickness_m"] / 2.0)
+    well_pt = pv.PolyData(np.array([[0.5, 0.0, z_mid]]))
+    YEAR = 365.25; month_dur = YEAR / 12.0
+    n_cyc = cfg["cycles"]["n_cycles"]; monthly_P = cfg["cycles"]["monthly_power_W"]
+    y_start = max(1, n_cyc // 2)
+    days, Tw = [], []
+    for f in files:
+        d = float(re.search(r"_t_([0-9.]+)\.vtu", f.name).group(1)) / DAY
+        if d < y_start * YEAR:
+            continue
+        Tw.append(float(well_pt.sample(pv.read(f))["T"][0])); days.append(d)
+    days = np.array(days); Tw = np.array(Tw); res = {}
+    for mo in range(12):
+        if monthly_P[mo] >= 0:
+            continue
+        vals = []
+        for y in range(y_start, n_cyc):
+            seg = (days >= y*YEAR + mo*month_dur) & (days < y*YEAR + (mo+1)*month_dur)
+            if seg.any():
+                vals.append(Tw[seg].mean())
+        if vals:
+            res[mo] = float(np.mean(vals))
+    return res
+
+
 # ======================================================================
 #  CLI
 # ======================================================================
@@ -824,11 +890,17 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="ATES 3D OGS demo")
     ap.add_argument("--no-mesh", action="store_true", help="Mesh nicht neu erzeugen")
     ap.add_argument("--no-run",  action="store_true", help="OGS nicht ausführen")
+    ap.add_argument("--years", type=int, default=None, help="Override cycles.n_cycles")
+    ap.add_argument("--production-control", choices=["demand", "fixed"], default=None,
+                    help="Override wells.production_control")
     args = ap.parse_args()
+    if args.years is not None:
+        CONFIG["cycles"]["n_cycles"] = args.years
+    if args.production_control is not None:
+        CONFIG["wells"]["production_control"] = args.production_control
 
     out_dir = Path(CONFIG["output"]["out_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
-
     prefix = CONFIG["output"]["prefix"]
     msh_path = out_dir / f"{prefix}.msh"
 
@@ -841,16 +913,36 @@ def main() -> int:
     else:
         mesh_files = _mesh_files(CONFIG)
 
-    print("[3/3] OGS-Projektdatei erzeugen ...")
-    curves = build_cycle_curves(CONFIG)
-    prj_path = build_prj(CONFIG, out_dir, mesh_files, curves)
-    print(f"      {prj_path}  (t_end = {curves['t_total']/DAY:.1f} d)")
+    # Förderregelung: fest oder bedarfsgeführt (iterativ, wie 2D)
+    monthly = CONFIG["cycles"].get("monthly_power_W") is not None
+    demand  = (CONFIG["wells"].get("production_control", "fixed") == "demand"
+               and monthly and not args.no_run)
+    T_amb  = CONFIG["initial"]["T_K"]
+    dT_ref = CONFIG["operation"]["T_hot_K"] - T_amb
+    max_fac = CONFIG["wells"].get("max_rate_factor", 6.0)
+    rate_mult = [1.0] * 12
+    n_iter = CONFIG["wells"].get("demand_iterations", 3) if demand else 1
 
-    if args.no_run:
-        return 0
-
-    print(">>> OGS starten")
-    return run_ogs(prj_path)
+    for it in range(n_iter):
+        tag = f" (Bedarfs-Iteration {it+1}/{n_iter})" if demand else ""
+        print(f"[3/3] OGS-Projektdatei erzeugen ...{tag}")
+        curves = build_cycle_curves(CONFIG, rate_mult=rate_mult if demand else None)
+        prj_path = build_prj(CONFIG, out_dir, mesh_files, curves)
+        print(f"      {prj_path}  (t_end = {curves['t_total']/DAY:.1f} d)")
+        if args.no_run:
+            return 0
+        print(">>> OGS starten")
+        rc = run_ogs(prj_path)
+        if rc != 0:
+            return rc
+        if demand and it < n_iter - 1:
+            Tp = measure_produced_T(CONFIG, out_dir)
+            for mo, T in Tp.items():
+                target = min(dT_ref / max(T - T_amb, 1.0), max_fac)
+                rate_mult[mo] = 0.5 * rate_mult[mo] + 0.5 * target
+            print("  T_prod_avg [degC]:", {mo: round(T-273.15, 1) for mo, T in Tp.items()})
+            print("  rate_factors:", [round(x, 2) for x in rate_mult])
+    return 0
 
 
 if __name__ == "__main__":
