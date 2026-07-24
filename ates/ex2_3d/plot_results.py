@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Auswertung & Plots für die ATES-3D-Übung (Doublet HW/CW).
+Auswertung & Plots für die ATES-3D-Übung (Single-Well mit Grundwasserströmung).
 
 Erzeugt in figures/:
-  - 1_well_temperature.png       T(t) an HW und CW (Aquifer-Mitte)
-  - 2_field_snapshots.png        T-Feld in der Aquifer-Mittel­ebene zu 4 Zeitpunkten
+  - 1_well_temperature.png       Brunnentemperatur (= Injektions-/dynamische
+                                 Entnahmetemperatur) über den gesamten Zeitraum
+  - 2_field_snapshots.png        T-Feld in der Aquifer-Mittelebene zu N_SNAPSHOTS
+                                 Zeitpunkten (zeigt saisonales Atmen + GW-Drift)
   - 3_energy_balance.png         Gespeicherte Wärmemenge & Recovery-Effizienz
-  - 4_plume_extent.png           Reichweite der thermischen Front um HW
+  - 4_plume_extent.png           Reichweite der thermischen Front um den Brunnen
 """
 from __future__ import annotations
 
@@ -26,7 +28,9 @@ import pyvista as pv
 from ates_3d import CONFIG
 
 DELTA_T_THRESHOLD = 1.0
-N_SNAPSHOTS       = 4
+N_SNAPSHOTS       = 8       # Feld-Snapshots über den Zeitraum (Raster N_ROWS×…)
+N_ROWS            = 2       # Zeilen im Snapshot-Raster
+VIEW_M            = 70.0    # halbe Ausschnittsbreite der Snapshots [m]
 DAY = 86400.0
 
 
@@ -79,46 +83,68 @@ def main() -> int:
     steps = read_pvd(pvd)
     times = np.array([t for t, _ in steps]); times_d = times / DAY
 
-    # 1) T(t) am Brunnen ----------------------------------------------
-    probes = np.array([[hw_xy[0], hw_xy[1], z_mid]])
-    T_hw = []
-    for _, f in steps:
+    # --- Einzeldurchlauf: Brunnentemperatur, Energie, Fahnenreichweite ---
+    #     (jede Datei nur EINMAL lesen)
+    probe = pv.PolyData(np.array([[hw_xy[0], hw_xy[1], z_mid]]))
+    T_hw    = np.empty(len(steps))
+    energy  = np.empty(len(steps))
+    r_front = np.empty(len(steps))
+    for k, (_, f) in enumerate(steps):
         m = pv.read(f)
-        p = pv.PolyData(probes).sample(m)
-        T_hw.append(float(p["T"][0]))
-    T_hw = np.array(T_hw)
+        T_hw[k] = float(probe.sample(m)["T"][0])
+        dT = np.asarray(m["T"]) - T0
+        energy[k] = rho_cp * cartesian_integral(m, dT) / 1e9
+        pts = m.points
+        in_aq = (pts[:, 2] >= z_aq_bot) & (pts[:, 2] <= z_aq_top)
+        mask = in_aq & (dT > DELTA_T_THRESHOLD)
+        r_front[k] = (float(np.hypot(pts[mask, 0] - hw_xy[0], pts[mask, 1] - hw_xy[1]).max())
+                      if mask.any() else 0.0)
 
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(times_d, T_hw - 273.15, lw=2, color="tab:red", label="Brunnen")
-    ax.set_xlabel("Zeit [d]"); ax.set_ylabel("T [°C]")
-    ax.set_title("Temperatur am Brunnen (Aquifer-Mitte)")
-    ax.legend(); ax.grid(True, alpha=0.3); fig.tight_layout()
+    # 1) Brunnentemperatur über die Zeit ------------------------------
+
+    T_amb_c = T0 - 273.15; T_inj_c = CONFIG["operation"]["T_hot_K"] - 273.15
+    fig, ax = plt.subplots(figsize=(11, 4))
+    ax.plot(times_d, T_hw - 273.15, lw=1.8, color="#b22222", label="Brunnentemperatur")
+    ax.axhline(T_inj_c, color="k", lw=0.8, ls="--", label=f"T_inj = {T_inj_c:.0f} °C")
+    ax.axhline(T_amb_c, color="k", lw=0.8, ls=":",  label=f"T_amb = {T_amb_c:.0f} °C")
+    ax.set_xlabel("Zeit [d]"); ax.set_ylabel("Brunnentemperatur [°C]")
+    ax.set_title("ATES 3D — Brunnentemperatur: Injektion bei Beladung, dynamische Entnahme bei Förderung")
+    ax.legend(fontsize=9); ax.grid(True, alpha=0.3); fig.tight_layout()
     fig.savefig(fig_dir / "1_well_temperature.png", dpi=130); plt.close(fig)
 
-    # 2) Snapshots (xy-Slice durch Aquifer-Mitte) ----------------------
-    idxs = np.linspace(0, len(steps) - 1, N_SNAPSHOTS).astype(int)
-    fig, axes = plt.subplots(1, N_SNAPSHOTS, figsize=(4 * N_SNAPSHOTS, 4.5),
-                              sharey=True)
+    # 2) Snapshots (xy-Slice durch Aquifer-Mitte) — N_SNAPSHOTS Zeitpunkte ----
+    from matplotlib.tri import Triangulation
+    T_amb = T0 - 273.15; T_inj = CONFIG["operation"]["T_hot_K"] - 273.15
+    gw_on = CONFIG.get("regional_gw", {}).get("enable", False)
+    idxs = np.unique(np.linspace(0, len(steps) - 1, N_SNAPSHOTS).astype(int))
+    ncol = int(np.ceil(len(idxs) / N_ROWS))
+    fig, axes = plt.subplots(N_ROWS, ncol, figsize=(3.6 * ncol, 3.6 * N_ROWS),
+                             sharex=True, sharey=True, squeeze=False)
+    axes = axes.ravel()
+    levels = np.linspace(T_amb, T_inj, 26); sc = None
     for ax, i in zip(axes, idxs):
         t, f = steps[i]
-        m = pv.read(f)
-        sl = m.slice(normal="z", origin=(0, 0, z_mid))
-        pts = sl.points
-        sc = ax.tricontourf(pts[:, 0], pts[:, 1], sl["T"] - 273.15,
-                            levels=20, cmap="inferno")
-        ax.scatter(*hw_xy, c="red",  s=40, marker="o", edgecolors="white", label="Brunnen")
-        ax.set_xlabel("x [m]"); ax.set_title(f"t = {t/DAY:.0f} d"); ax.set_aspect("equal")
-    axes[0].set_ylabel("y [m]")
-    axes[-1].legend(loc="upper right")
-    fig.colorbar(sc, ax=axes, shrink=0.7, label="T [°C]")
-    fig.savefig(fig_dir / "2_field_snapshots.png", dpi=130); plt.close(fig)
+        sl = pv.read(f).slice(normal="z", origin=(0, 0, z_mid))
+        pts = sl.points; tri = Triangulation(pts[:, 0], pts[:, 1])
+        sc = ax.tricontourf(tri, sl["T"] - 273.15, levels=levels,
+                            cmap="coolwarm", extend="both")
+        ax.tricontour(tri, sl["T"] - 273.15,
+                      levels=[T_amb + 5, 0.5 * (T_amb + T_inj)], colors="k", linewidths=0.3)
+        ax.plot(hw_xy[0], hw_xy[1], "ko", ms=4)
+        ax.set_title(f"t = {t/DAY:.0f} d", fontsize=9)
+        ax.set_xlim(-VIEW_M, VIEW_M); ax.set_ylim(-VIEW_M, VIEW_M); ax.set_aspect("equal")
+    for ax in axes[len(idxs):]:
+        ax.axis("off")
+    if gw_on:
+        axes[0].annotate("GW →", (0.66, 0.88), xycoords="axes fraction",
+                         fontsize=10, weight="bold")
+    fig.suptitle("ATES 3D — T-Feld in der Aquifer-Mitte: saisonales Atmen + GW-Drift",
+                 fontsize=12)
+    if sc is not None:
+        fig.colorbar(sc, ax=list(axes), shrink=0.85, label="T [°C]")
+    fig.savefig(fig_dir / "2_field_snapshots.png", dpi=130, bbox_inches="tight"); plt.close(fig)
 
-    # 3) Energiebilanz -------------------------------------------------
-    energy = []
-    for _, f in steps:
-        m = pv.read(f); dT = np.asarray(m["T"]) - T0
-        energy.append(rho_cp * cartesian_integral(m, dT))
-    energy = np.array(energy) / 1e9
+    # 3) Energiebilanz (energy bereits im Einzeldurchlauf berechnet) ---
     E_max = energy.max(); E_end = energy[-1]
     recovery = (E_max - E_end) / E_max if E_max > 0 else float("nan")
 
@@ -130,19 +156,7 @@ def main() -> int:
     ax.legend(); ax.grid(True, alpha=0.3); fig.tight_layout()
     fig.savefig(fig_dir / "3_energy_balance.png", dpi=130); plt.close(fig)
 
-    # 4) Plume-Reichweite um HW ---------------------------------------
-    r_front = []
-    for _, f in steps:
-        m = pv.read(f); pts = m.points; dT = np.asarray(m["T"]) - T0
-        in_aq = (pts[:, 2] >= z_aq_bot) & (pts[:, 2] <= z_aq_top)
-        mask = in_aq & (dT > DELTA_T_THRESHOLD)
-        if mask.any():
-            d = np.hypot(pts[mask, 0] - hw_xy[0], pts[mask, 1] - hw_xy[1])
-            r_front.append(float(d.max()))
-        else:
-            r_front.append(0.0)
-    r_front = np.array(r_front)
-
+    # 4) Fahnenreichweite (r_front bereits im Einzeldurchlauf berechnet) --
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(times_d, r_front, lw=2)
     ax.set_xlabel("Zeit [d]"); ax.set_ylabel(f"r(ΔT > {DELTA_T_THRESHOLD} K) um HW [m]")
