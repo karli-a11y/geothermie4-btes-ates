@@ -139,26 +139,50 @@ def main() -> int:
         r_front[k] = (float(np.hypot(pts[mask, 0] - cx, pts[mask, 1] - cy).max())
                       if mask.any() else 0.0)
     T_bh_c = T_bh - 273.15
-    T_max = T_bh_c.max(axis=1)   # heißeste Sonde (Feldmitte bei Beladung)
-    T_min = T_bh_c.min(axis=1)   # kälteste Sonde (bei Förderung)
+    T_box_max = T_bh_c.max(axis=1)   # Boden an der heißesten Sonde (Beladung)
+    T_box_min = T_bh_c.min(axis=1)   # Boden an der kältesten Sonde (Förderung)
 
-    # 1) MACHBARKEIT: Sondentemperatur vs. Betriebsgrenzen ------------
-    over_hi = T_max.max() > T_hi; under_lo = T_min.min() < T_lo
-    feasible = not (over_hi or under_lo)
-    fig, ax = plt.subplots(figsize=(12, 4.6))
-    ax.fill_between(times_d, T_hi, max(T_hi + 5, T_max.max() + 3), color="red", alpha=0.06)
-    ax.fill_between(times_d, min(T_lo - 5, T_min.min() - 3), T_lo, color="blue", alpha=0.06)
-    ax.plot(times_d, T_max, color="#c0392b", lw=1.8, label="heißeste Sonde (Feldmitte)")
-    ax.plot(times_d, T_min, color="#2471a3", lw=1.8, label="kälteste Sonde")
+    # --- Fluidtemperatur-Korrektur: numerische Box -> reales Bohrloch ---
+    # Die 0.6-m-Box unterschätzt die Wandtemperatur. Projektion auf r_borehole
+    # über die Linienquellen-Lösung + Bohrloch-Widerstand R_b (Wand->Fluid):
+    #   T_Fluid = T_Box + q'·[ ln(r_box/r_b)/(2πλ) + R_b ]
+    bh = CONFIG["borehole"]
+    r_b   = bh.get("r_borehole_m", 0.075)
+    R_b   = bh.get("R_b_Km_per_W", 0.10)
+    r_box = np.sqrt(bh["borehole_dx_m"] * bh["borehole_dy_m"] / np.pi)
+    d_mid = 0.5 * (bh["depth_top_m"] + bh["depth_bottom_m"]); d_acc = 0.0
+    lam_g = CONFIG["layers"][0]["lambda_s_W_mK"]           # λ des Bodens in Sonden-Mitteltiefe
+    for L in CONFIG["layers"]:
+        d_acc += L["thickness_m"]
+        if d_mid <= d_acc + 1e-9:
+            lam_g = L["lambda_s_W_mK"]; break
+
+    def _qline(day):                                        # spez. Wärmestrom q'(t) [W/m]
+        return (mp[int((day % 365.25) // (365.25 / 12)) % 12] / bh_len) if mp else 0.0
+    qp   = np.array([_qline(d) for d in times_d])
+    corr = qp * (np.log(r_box / r_b) / (2 * np.pi * lam_g) + R_b)   # K
+    T_fl_max = T_box_max + corr    # Fluid, heißeste Sonde (Beladung)
+    T_fl_min = T_box_min + corr    # Fluid, kälteste Sonde (Förderung)
+
+    # 1) MACHBARKEIT: Fluidtemperatur vs. Betriebsgrenzen ------------
+    feasible = (T_fl_max.max() <= T_hi) and (T_fl_min.min() >= T_lo)
+    fig, ax = plt.subplots(figsize=(12, 4.8))
+    ax.fill_between(times_d, T_hi, max(T_hi + 5, T_fl_max.max() + 3), color="red", alpha=0.06)
+    ax.fill_between(times_d, min(T_lo - 5, T_fl_min.min() - 3), T_lo, color="blue", alpha=0.06)
+    ax.plot(times_d, T_fl_max, color="#c0392b", lw=1.9, label="Fluid, heißeste Sonde")
+    ax.plot(times_d, T_fl_min, color="#2471a3", lw=1.9, label="Fluid, kälteste Sonde")
+    ax.plot(times_d, T_box_max, color="#c0392b", lw=0.9, ls=":", alpha=0.6, label="Boden an Sonde (Box)")
+    ax.plot(times_d, T_box_min, color="#2471a3", lw=0.9, ls=":", alpha=0.6)
     ax.axhline(T_hi, color="red",  lw=1.0, ls="--", label=f"Grenze Beladung {T_hi:.0f} °C")
     ax.axhline(T_lo, color="blue", lw=1.0, ls="--", label=f"Grenze Förderung {T_lo:.0f} °C")
     ax.axhline(T0_c, color="k", lw=0.6, ls=":")
-    ax.set_xlabel("Zeit [d]"); ax.set_ylabel("Sondentemperatur [°C]")
-    verdict = "MACHBAR ✓" if feasible else "NICHT MACHBAR ✗ (Grenze überschritten)"
+    ax.set_xlabel("Zeit [d]"); ax.set_ylabel("Temperatur [°C]")
+    verdict = "MACHBAR ✓" if feasible else "NICHT MACHBAR ✗"
     spec_ok = rl.get("spec_rate_min_W_m", 20) <= spec_rate <= rl.get("spec_rate_max_W_m", 70)
-    ax.set_title(f"BTES-Machbarkeit — spez. Rate {spec_rate:.0f} W/m "
-                 f"({'im' if spec_ok else 'außerhalb'} Literaturbereich {rl.get('spec_rate_min_W_m',20):.0f}–{rl.get('spec_rate_max_W_m',70):.0f}) — {verdict}")
-    ax.legend(loc="upper right", fontsize=8, ncol=2); ax.grid(alpha=0.3)
+    ax.set_title(f"BTES-Machbarkeit — Fluidtemperatur (R_b={R_b:.2f} K·m/W, r_b={r_b*1000:.0f} mm) — "
+                 f"spez. Rate {spec_rate:.0f} W/m "
+                 f"({'im' if spec_ok else 'außerhalb'} Literatur {rl.get('spec_rate_min_W_m',20):.0f}–{rl.get('spec_rate_max_W_m',70):.0f}) — {verdict}")
+    ax.legend(loc="upper right", fontsize=7.5, ncol=2); ax.grid(alpha=0.3)
     fig.tight_layout(); fig.savefig(fig_dir / "1_feasibility.png", dpi=130); plt.close(fig)
 
     # 2) Snapshots (xy-Slice in Feld-Mitteltiefe) — N_SNAPSHOTS -------
@@ -169,7 +193,7 @@ def main() -> int:
                              sharex=True, sharey=True, squeeze=False)
     axes = axes.ravel()
     # symmetrische Skala um T0 (coolwarm): blau = Förderung/kalt, rot = Beladung/warm
-    dT_amp = max(T_max.max() - T0_c, T0_c - T_min.min(), 2.0)
+    dT_amp = max(T_box_max.max() - T0_c, T0_c - T_box_min.min(), 2.0)
     levels = np.linspace(T0_c - dT_amp, T0_c + dT_amp, 24); sc = None
     for ax, i in zip(axes, idxs):
         t, f = steps[i]
@@ -209,7 +233,8 @@ def main() -> int:
     fig.savefig(fig_dir / "4_plume_extent.png", dpi=130); plt.close(fig)
 
     print(f"Plots → {fig_dir}")
-    print(f"  Spez. Rate: {spec_rate:.1f} W/m  |  T_Sonde: {T_min.min():.1f}…{T_max.max():.1f} °C"
+    print(f"  Spez. Rate: {spec_rate:.1f} W/m  |  T_Fluid: {T_fl_min.min():.1f}…{T_fl_max.max():.1f} °C"
+          f"  (Boden/Box: {T_box_min.min():.1f}…{T_box_max.max():.1f} °C)"
           f"  |  Grenzen {T_lo:.0f}/{T_hi:.0f} °C -> {'MACHBAR' if feasible else 'NICHT MACHBAR'}")
     print(f"  gespeicherte Wärme: {energy.min():.1f}…{energy.max():.1f} GJ  |  max. Fahne: {r_front.max():.1f} m")
     return 0

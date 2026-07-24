@@ -101,8 +101,15 @@ CONFIG: dict = {
     "borehole": {
         "depth_top_m":     7.0,    # Sondenkopf, Tiefe unter Oberfläche [m]
         "depth_bottom_m": 83.0,    # Sondenfuß,  Tiefe unter Oberfläche [m]
-        "borehole_dx_m":   0.6,    # Sondenbox-Ausdehnung x [m]
+        "borehole_dx_m":   0.6,    # Sondenbox-Ausdehnung x [m] (numerisch)
         "borehole_dy_m":   0.6,    # Sondenbox-Ausdehnung y [m]
+        # Für die realistische Fluidtemperatur (Machbarkeitsprüfung im Plot):
+        # die numerische Box (0.6 m) ist größer als ein reales Bohrloch → die
+        # Wandtemperatur wird von der Box auf r_borehole_m projiziert
+        # (Linienquellen-Lösung) und ein Bohrloch-Widerstand R_b (Wand→Fluid)
+        # aufgeschlagen: T_Fluid = T_Wand + q'·R_b. Reines Post-Processing.
+        "r_borehole_m":    0.075,  # realer Bohrlochradius [m]
+        "R_b_Km_per_W":    0.10,   # Bohrloch-Wärmewiderstand [K·m/W]
     },
     "field": {
         # Sondenfeld – entweder N x N Raster (n_x, n_y, spacing_m) ODER
@@ -143,7 +150,7 @@ CONFIG: dict = {
     "operation": {
         # Heat-Source je Sonde: Referenzleistung [W] (positiv = Beladung).
         # Spezifische Rate = power / Sondenlänge → sollte ~20–70 W/m sein.
-        "power_per_borehole_W":  2000.0,
+        "power_per_borehole_W":  3000.0,
         # Effektive Speicherzahlen (im HT-Prozess erforderlich)
         "fluid_storage_1_per_Pa": 4.5e-10,
         "solid_storage_1_per_Pa": 1.0e-10,
@@ -184,11 +191,11 @@ CONFIG: dict = {
         "storage_after_discharge_days":    91.25,
         "ramp_days":                       3.0,     # Übergangsrampe zwischen Monaten
         # --- Modus B: Monatsprofil (AKTIV) — P[W] je Sonde, Jan…Dez, ΣP≈0 ---
-        # Beladung Sommer (heiß rein), Förderung Winter. Spitze ±2000 W (=26 W/m).
+        # Beladung Sommer (heiß rein), Förderung Winter. Spitze ±3000 W (=39 W/m).
         "monthly_power_W": [
-            -1500, -1300, -500, 0,
-            +900, +1600, +2000, +1500, +500,
-            -600, -1300, -1300,
+            -2250, -1950, -750, 0,
+            +1350, +2400, +3000, +2250, +750,
+            -900, -1950, -1950,
         ],
     },
     "time": {
