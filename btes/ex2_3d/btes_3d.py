@@ -113,11 +113,11 @@ CONFIG: dict = {
         "positions":     None,        # bei nicht-None überschreibt es das Raster
     },
     "mesh": {
-        "size_in_borehole_m":    0.4,
-        "size_near_field_m":     1.5,
-        "size_far_m":           15.0,
-        "field_size_radius_m":   8.0,    # bis hier feinmaschig
-        "field_size_radius_far_m": 30.0,
+        "size_in_borehole_m":    0.3,    # fein an der Sonde (Wandtemperatur!)
+        "size_near_field_m":     1.8,    # Feld + naher konduktiver Hof
+        "size_far_m":           12.0,
+        "field_size_radius_m":   9.0,    # bis hier feinmaschig (deckt Feld)
+        "field_size_radius_far_m": 32.0,
     },
     "fluid": {
         # Porenfluid (Wasser) — auch wenn k klein ist, brauchen wir die Phase
@@ -141,11 +141,21 @@ CONFIG: dict = {
         "geothermal_gradient_K_per_m": 0.0,    # 0.03 für realistischen Gradient
     },
     "operation": {
-        # Heat-Source je Sonde: Leistung [W] (positiv = Beladung)
+        # Heat-Source je Sonde: Referenzleistung [W] (positiv = Beladung).
+        # Spezifische Rate = power / Sondenlänge → sollte ~20–70 W/m sein.
         "power_per_borehole_W":  2000.0,
         # Effektive Speicherzahlen (im HT-Prozess erforderlich)
         "fluid_storage_1_per_Pa": 4.5e-10,
         "solid_storage_1_per_Pa": 1.0e-10,
+    },
+    # Betriebsgrenzen für die Machbarkeitsprüfung (Sondenwand-Temperatur).
+    # Bleibt die Wandtemperatur außerhalb → definierter Wärmeeintrag NICHT
+    # realisierbar (Feld zu klein/eng oder Leistung zu hoch).
+    "realism": {
+        "T_charge_max_C":     60.0,   # Beladung: max. zulässige Wandtemperatur
+        "T_discharge_min_C":   4.0,   # Förderung: min. zulässige Wandtemperatur (Vereisung)
+        "spec_rate_min_W_m":  20.0,   # Literaturbereich spezifische Rate
+        "spec_rate_max_W_m":  70.0,
     },
     # ------------------------------------------------------------------
     # ZYKLEN – HIER FÜR STUDIERENDE
@@ -167,22 +177,24 @@ CONFIG: dict = {
     # (Skalierung der OGS-Curve). Auf None lassen für Modus A.
     # ------------------------------------------------------------------
     "cycles": {
-        "n_cycles":                        1,       # Anzahl Zyklen (A) bzw. Jahre (B)
-        "charge_days":                     91.25,   # Phase 1: Beladung (Tage)
-        "storage_after_charge_days":       91.25,   # Phase 2: Pause nach Beladung (Tage)
-        "discharge_days":                  91.25,   # Phase 3: Förderung (Tage)
-        "storage_after_discharge_days":    91.25,   # Phase 4: Pause nach Förderung (Tage)
-        "ramp_days":                       7.0,     # Sanfte Übergangsrampe zwischen Phasen (Tage)
-        # --- Modus B: Monatsprofil (auf None für Modus A) ---
-        # Beispiel (Beladung Sommer, Förderung Winter):
-        #   "monthly_power_W": [+2000, +2000, +1500, +500, 0, 0,
-        #                         0, 0, -1500, -2500, -3000, -2500],
-        "monthly_power_W":                 None,
+        "n_cycles":                        2,       # Betriebsjahre (Modus B)
+        "charge_days":                     91.25,   # Modus A: Beladung (Tage)
+        "storage_after_charge_days":       91.25,
+        "discharge_days":                  91.25,
+        "storage_after_discharge_days":    91.25,
+        "ramp_days":                       3.0,     # Übergangsrampe zwischen Monaten
+        # --- Modus B: Monatsprofil (AKTIV) — P[W] je Sonde, Jan…Dez, ΣP≈0 ---
+        # Beladung Sommer (heiß rein), Förderung Winter. Spitze ±2000 W (=26 W/m).
+        "monthly_power_W": [
+            -1500, -1300, -500, 0,
+            +900, +1600, +2000, +1500, +500,
+            -600, -1300, -1300,
+        ],
     },
     "time": {
-        "dt_seconds":           7 * 86400.0,
-        "output_every_n_steps": 1,
-        "gravity":              False,
+        "dt_seconds":           1 * 86400.0,   # 1 Tag (feine Zeitauflösung)
+        "output_every_n_steps": 5,
+        "gravity":              False,          # BTES: reine Wärmeleitung
     },
     "output": {
         "prefix":    "btes_3d",
@@ -190,7 +202,9 @@ CONFIG: dict = {
         "variables": ["T", "p", "darcy_velocity"],
     },
     "solver": {
-        "linear_tol":      1.0e-12,
+        "solver_type":     "BiCGSTAB",   # oder "SparseLU" (direkt)
+        "precon_type":     "ILUT",
+        "linear_tol":      1.0e-10,
         "linear_iter":     10000,
         "nonlinear_iter":  20,
         "rel_tol_T":       1.0e-4,
@@ -690,9 +704,12 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict, curves: dict) -> Path:
     ls = _se(lss, "linear_solver")
     _se(ls, "name", "general_linear_solver")
     eig = _se(ls, "eigen")
-    _se(eig, "solver_type", "BiCGSTAB"); _se(eig, "precon_type", "ILUT")
-    _se(eig, "max_iteration_step", sol["linear_iter"])
-    _se(eig, "error_tolerance",    sol["linear_tol"])
+    stype = sol.get("solver_type", "BiCGSTAB")
+    _se(eig, "solver_type", stype)
+    if stype != "SparseLU":
+        _se(eig, "precon_type",        sol.get("precon_type", "ILUT"))
+        _se(eig, "max_iteration_step", sol["linear_iter"])
+        _se(eig, "error_tolerance",    sol["linear_tol"])
     _se(eig, "scaling", "true")
 
     _indent(root)
