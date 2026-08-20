@@ -13,6 +13,9 @@ zwischen ihnen ist das Ergebnis**.
 | Zellen | 29 376 | 69 064 |
 | Ergebnisse | `ergebnisse_2d/` | `ergebnisse_3d/` |
 
+Es sind genau zwei Dateien. Der komplette Rechenkern steckt in jeder von ihnen
+mit drin; zum Bearbeiten stehen die ersten rund 130 Zeilen.
+
 ```
 python ates_2D.py               # kompletter Lauf
 python ates_2D.py --years 5     # kurzer Durchlauf zum Ausprobieren
@@ -55,8 +58,10 @@ Im `FALL`-Dict steht alles, was zum Standort und zum Lastfall gehört:
 | `gw_gradient`, `gw_richtung_grad` | nur `ates_3D.py` |
 
 Alles darunter — Netz, Zeitschritt, Löser, Dispersivität, Ausgabe — ist
-eingestellt und im Skript begründet. Der Rechenkern liegt in `modell/` und
-wird nicht angefasst.
+eingestellt und im Skript begründet. Darunter steht dann hinter einem zweiten
+Balken der komplette Rechenkern (Netzgenerator, OGS-Projektdatei, Prüfbericht).
+Er steht mit in der Datei, damit es bei zwei Dateien bleibt und man nichts
+danebenlegen muss — angefasst wird er nicht.
 
 Der Durchlässigkeitsbeiwert wird als **`kf_m_s`** eingetragen, nicht als
 Permeabilität: die Umrechnung `k = kf·μ/(ρg)` macht das Skript selbst, und
@@ -103,10 +108,8 @@ Deckelung aus.
 
 ## Was dabei herauskommt
 
-In `referenz/` liegen die Kennzahlen und Prüfblätter der gerechneten Läufe zum
-Abgleich (die Abbildungen nicht — das Repository hält Simulationsausgaben
-bewusst draußen; sie entstehen bei jedem Lauf neu). Wer die Dateien
-unverändert laufen lässt, muss diese Zahlen reproduzieren:
+Wer die Dateien unverändert laufen lässt, muss diese Zahlen reproduzieren —
+sie stehen so auch im Prüfblatt und in `*_kennzahlen.csv`:
 
 | letztes Betriebsjahr | 2D, ohne GW (Jahr 30) | 3D, mit GW (Jahr 2) |
 |---|---|---|
@@ -274,11 +277,14 @@ Residuen der letzten Zeitschritte ansehen, bevor man an einer Schraube dreht.
 ## Dateien
 
 ```
-ates_2D.py        Fall ohne Grundwasserströmung  — hier schrauben
-ates_3D.py        Fall mit Grundwasserströmung   — hier schrauben
-referenz/         gerechnete Referenzergebnisse (Abbildungen, Kennzahlen)
-modell/           Rechenkern: Netz, .prj, OGS-Aufruf, Prüfblatt — nicht anfassen
+ates_2D.py    Fall ohne Grundwasserströmung — FALL-Dict oben, Rechenkern darunter
+ates_3D.py    Fall mit Grundwasserströmung  — dito
+README.md     diese Datei
 ```
+
+Mehr braucht es nicht: beide Dateien sind für sich lauffähig. Die Ergebnisse
+entstehen beim Lauf in `ergebnisse_2d/` bzw. `ergebnisse_3d/` neben der
+jeweiligen Datei und liegen bewusst nicht im Repository.
 
 Voraussetzungen: OpenGeoSys 6.5.7 im Pfad, dazu `gmsh`, `pyvista`, `numpy`,
 `matplotlib`. Der Bericht lässt sich mit `ATES_REPORT=0` abschalten.
