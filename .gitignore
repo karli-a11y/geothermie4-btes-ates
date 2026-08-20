@@ -28,6 +28,12 @@ solutions_raw/
 *.log
 _last.log
 
+# Ausnahme: die Abbildungen der BTES-Lösung gehören ins Repo, damit sie
+# in der Beschreibung angezeigt werden. Erst das Verzeichnis wieder
+# einschließen, dann den Inhalt — sonst steigt Git gar nicht hinein.
+!loesung/btes/figures/
+!loesung/btes/figures/*.png
+
 # Python
 __pycache__/
 *.pyc
