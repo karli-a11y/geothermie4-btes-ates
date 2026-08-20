@@ -1163,7 +1163,11 @@ def make_plots(cfg: dict, out_dir: Path, rate_mult=None) -> None:
         demand_kw  = np.where(prod, np.abs(P_arr), 0.0) / 1e3
         deliver_kw = np.where(prod, np.abs(P_arr) * fac * (well_a - T0) / (T_inj - T0), 0.0) / 1e3
 
-    ts_csv = out_dir / f"{prefix}_timeseries.csv"
+    # Alle CSV in denselben Unterordner wie die des Berichts - eine Ablage,
+    # nicht zwei. Diese Datei ergaenzt zeitreihe.csv um die radialen
+    # Sondentemperaturen bei r = 5, 15 und 30 m, die nur das 2D-Modell hat.
+    csv_dir = out_dir / "csv"; csv_dir.mkdir(parents=True, exist_ok=True)
+    ts_csv = csv_dir / "zeitreihe_radialsonden.csv"
     with open(ts_csv, "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         hdr = ["day"] + [f"T_{k}_K" for k in ["well", "r5", "r15", "r30", "caprock"]] + ["E_stored_GJ"]
@@ -1178,7 +1182,7 @@ def make_plots(cfg: dict, out_dir: Path, rate_mult=None) -> None:
     print(f"  saved {ts_csv.name}")
 
     if monthly:
-        sm_csv = out_dir / f"{prefix}_summary.csv"
+        sm_csv = csv_dir / "temperaturhub_jahr.csv"
         with open(sm_csv, "w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             w.writerow(["year", "recovery_R_percent", "T_prod_mean_degC"])
@@ -1187,7 +1191,7 @@ def make_plots(cfg: dict, out_dir: Path, rate_mult=None) -> None:
         print(f"  saved {sm_csv.name}")
         # Konvergierte monatliche Förder-Ratenfaktoren (Bedarfsführung)
         if rate_mult is not None:
-            rc_csv = out_dir / f"{prefix}_prod_rate_factors.csv"
+            rc_csv = csv_dir / "foerderraten_faktoren.csv"
             with open(rc_csv, "w", newline="", encoding="utf-8") as fh:
                 w = csv.writer(fh)
                 w.writerow(["month_index", "month", "P_W", "rate_factor"])

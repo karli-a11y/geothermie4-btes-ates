@@ -1,5 +1,0 @@
-# Rechenergebnisse: entstehen beim Lauf neu, gehoeren nicht ins Repository
-ergebnisse_2d/
-ergebnisse_3d/
-__pycache__/
-*.pyc

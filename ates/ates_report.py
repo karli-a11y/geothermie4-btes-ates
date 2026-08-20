@@ -360,6 +360,16 @@ def build_timeseries(cfg, run, geo, cyc):
 
     ts["E_in"] = cumtrap(np.clip(ts["P"], 0, None))
     ts["E_out"] = cumtrap(np.clip(-ts["P"], 0, None))
+
+    # Bei regionaler Stroemung ist der Brunnendruck im ERSTEN Schnappschuss
+    # nicht definiert: dort steht noch die rein hydrostatische
+    # Anfangsbedingung, waehrend die Referenz den Regionalgradienten bereits
+    # enthaelt. Die Differenz waere der Gradient selbst (rund -100 kPa bei
+    # 700 m Abstand vom Koordinatenursprung), nicht der Brunnen. Als NaN
+    # markieren, damit weder das Pruefblatt noch die CSV ihn als Messwert
+    # ausgeben. Ohne Stroemung ist der Wert dort exakt 0 und bleibt stehen.
+    if len(ts["dp_well"]) and cfg.get("regional_gw", {}).get("enable", False)             and not run.axisym:
+        ts["dp_well"][0] = np.nan
     return ts
 
 
@@ -529,7 +539,7 @@ def checks(cfg, run, geo, ts, cyc, rows):
     # Jahreseintrags - ansehen ja, aber es macht die Zahlen nicht wertlos.
     # Die Grenze skaliert deshalb mit dem Hub statt pauschal bei 1 K zu stehen.
     _flow = bool(cfg.get("regional_gw", {}).get("enable", False)) and not run.axisym
-    _lift = T_inj - (cyc["T_amb_K"] - 273.15)
+    _lift = T_inj - T_amb          # beide in Kelvin -> Hub in K
     _warn = max(1.0, 0.05 * _lift) if _flow else 1.0
     st = "OK" if over <= 0.05 else ("WARNUNG" if over <= _warn else "FEHLER")
     add("T_max - T_inj", over, "K", (-50.0, 0.05), st,
@@ -1212,6 +1222,117 @@ def fig_feldschnitte(cfg, run, geo, ts, cyc, fig_dir, plt):
 # ======================================================================
 #  8) Hauptfunktion
 # ======================================================================
+# ======================================================================
+#  CSV-Export
+# ======================================================================
+def schreibe_csv(cfg, run, geo, ts, cyc, mon, rows, chks, ziel):
+    """Alle Zahlen des Laufs in EINEN Ordner, mit sprechenden Namen.
+
+    Temperaturen werden hier von Kelvin nach Grad Celsius umgerechnet:
+    intern rechnet alles in Kelvin, aber niemand liest eine
+    Brunnentemperatur in Kelvin ab. Einheiten stehen im Spaltennamen,
+    damit man beim Weiterrechnen nicht raten muss.
+    """
+    ziel = Path(ziel)
+    ziel.mkdir(parents=True, exist_ok=True)
+    K = 273.15
+    geschrieben = []
+
+    def _tab(name, kopf, zeilen):
+        if not zeilen:
+            return
+        with open(ziel / name, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(kopf)
+            w.writerows(zeilen)
+        geschrieben.append(name)
+
+    # --- 1) Zeitreihe je Ausgabeschritt -------------------------------
+    # Das ist die Datei fuer alles Zeitabhaengige: Brunnentemperatur,
+    # Massenstrom, Leistung, Druck, Energien, Frontlagen.
+    def _sp(name, key, f=None):
+        a = ts.get(key)
+        if a is None or not len(a):
+            return None
+        return (name, [(v if f is None else f(v)) for v in a])
+
+    spalten = [x for x in (
+        _sp("zeit_s",               "t"),
+        _sp("tag",                  "days"),
+        _sp("jahr",                 "days", lambda v: v / 365.25),
+        _sp("T_brunnen_C",          "T_well", lambda v: v - K),
+        _sp("T_sonde_aquifermitte_C", "T_probe", lambda v: v - K),
+        _sp("T_max_C",              "T_max", lambda v: v - K),
+        _sp("T_min_C",              "T_min", lambda v: v - K),
+        _sp("T_injektion_C",        "T_inj", lambda v: v - K),
+        _sp("massenstrom_kg_s",     "mdot"),
+        _sp("brunnenleistung_kW",   "P", lambda v: v / 1e3),
+        _sp("brunnendruck_kPa",     "dp_well", lambda v: v / 1e3),
+        _sp("E_eingespeichert_GJ",  "E_in"),
+        _sp("E_gefoerdert_GJ",      "E_out"),
+        _sp("E_im_aquifer_GJ",      "E_aq"),
+        _sp("E_im_deckgestein_GJ",  "E_cr"),
+        _sp("fahne_radius_m",       "r_front"),
+        _sp("fahne_stromab_m",      "x_front_down"),
+        _sp("fahne_stromauf_m",     "x_front_up"),
+        _sp("v_darcy_max_m_d",      "v_max", lambda v: v * 86400.0),
+        _sp("aquifer_ueber_50C_pct", "frac_hot"),
+    ) if x is not None]
+    if spalten:
+        n = len(spalten[0][1])
+        zeilen = []
+        for i in range(n):
+            zeile = []
+            for _, werte in spalten:
+                v = werte[i]
+                zeile.append("" if v != v else f"{v:.6g}")   # v != v -> NaN
+            zeilen.append(zeile)
+        _tab("zeitreihe.csv", [k for k, _ in spalten], zeilen)
+
+    # --- 2) Monatsbilanz des letzten vollen Betriebsjahres ------------
+    _tab("monatsbilanz.csv",
+         ["monat", "betriebsart", "P_soll_kW", "T_brunnen_C",
+          "E_gefordert_GJ", "E_geliefert_GJ", "deckung_pct"],
+         [[m["monat"], "laden" if m["laden"] else "foerdern",
+           f"{m['P_soll_kW']:.3f}", f"{m['T_well_C']:.3f}",
+           f"{m['E_gefordert_GJ']:.4f}", f"{m['E_geliefert_GJ']:.4f}",
+           f"{m['deckung_pct']:.2f}"] for m in (mon or [])])
+
+    # --- 3) Kennzahlen je Betriebsjahr --------------------------------
+    if rows:
+        with open(ziel / "kennzahlen_jahr.csv", "w", newline="",
+                  encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            w.writerows([{k: (round(v, 4) if isinstance(v, float) else v)
+                          for k, v in r.items()} for r in rows])
+        geschrieben.append("kennzahlen_jahr.csv")
+
+    # --- 4) Pruefblatt -------------------------------------------------
+    _tab("pruefblatt.csv",
+         ["pruefgroesse", "wert", "einheit", "ok_von", "ok_bis",
+          "status", "diagnose"],
+         [[c["name"], f"{c['val']:.4g}", c["unit"], c["band"][0],
+           c["band"][1], c["status"], c["diag"]] for c in chks])
+
+    # --- 5) Was tatsaechlich gerechnet wurde ---------------------------
+    # Ohne diese Datei laesst sich spaeter nicht mehr sagen, mit welchen
+    # Werten ein Ergebnisordner entstanden ist.
+    def _flach(d, pre=""):
+        o = []
+        for k, v in d.items():
+            if isinstance(v, dict):
+                o += _flach(v, pre + k + ".")
+            else:
+                o.append((pre + k, v))
+        return o
+    _tab("konfiguration.csv", ["schluessel", "wert"],
+         [[k, v] for k, v in _flach(cfg)])
+
+    print(f"  [csv] {len(geschrieben)} Dateien -> {ziel}")
+    return geschrieben
+
+
 def report(cfg, out_dir=None, curves=None, rate_mult=None, report_dir=None):
     # Windows-Konsolen laufen oft auf cp1252 und wirfen bei Zeichen wie "−"
     # (U+2212) oder "ρ" einen UnicodeEncodeError - der Bericht wuerde daran
@@ -1244,22 +1365,7 @@ def report(cfg, out_dir=None, curves=None, rate_mult=None, report_dir=None):
     fig_dir = rep / "figures"
     fig_dir.mkdir(exist_ok=True)
 
-    # --- CSV ---------------------------------------------------------
-    if rows:
-        with open(rep / f"{run.prefix}_kennzahlen.csv", "w", newline="",
-                  encoding="utf-8") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-            w.writeheader()
-            w.writerows([{k: (round(v, 3) if isinstance(v, float) else v)
-                          for k, v in r.items()} for r in rows])
-    with open(rep / f"{run.prefix}_pruefblatt.csv", "w", newline="",
-              encoding="utf-8") as fh:
-        w = csv.writer(fh)
-        w.writerow(["pruefgroesse", "wert", "einheit", "ok_von", "ok_bis",
-                    "status", "diagnose"])
-        for c in chks:
-            w.writerow([c["name"], f"{c['val']:.4g}", c["unit"],
-                        c["band"][0], c["band"][1], c["status"], c["diag"]])
+    schreibe_csv(cfg, run, geo, ts, cyc, mon, rows, chks, rep / "csv")
 
     # --- Konsole -----------------------------------------------------
     print("\n  " + "=" * 74)

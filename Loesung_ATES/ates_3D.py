@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """ATES 3D MIT regionaler Grundwasserstroemung, i = 0.015.
 
 Die Frage: Was bleibt am Standort von der Speicherwirkung uebrig, wenn die
@@ -10,31 +9,67 @@ Gradienten (i = 0.015). Daraus folgt:
     v_Darcy      = kf * i          = 6.0e-4 * 0.015 = 0.78 m/d
     v_Poren      = v_Darcy / n     = 0.78 / 0.1191  = 6.53 m/d
     v_thermisch  = v_Poren / R     = 6.53 / 4.87    = 1.34 m/d = 489 m/a
-                   mit R = (rho c)_bulk / (n rho_f c_f) = 4.87
 
-Die Waermefahne wandert also rund 490 m im Jahr. Was im Sommer eingespeichert
+Die Waermefahne wandert rund 490 m im Jahr. Was im Sommer eingespeichert
 wird, steht im Winter einen halben Kilometer weiter stromab. Das ist KEIN
-Modellfehler, sondern das Standortergebnis - und genau das soll dieser Lauf
-zeigen. Deshalb reichen 1-2 Betriebsjahre: es gibt nichts, was sich ueber
-Jahre aufladen koennte, die Antwort steht im ersten Winter.
-
-Nur 3D kann das: ein axialsymmetrisches Modell hat konstruktiv keine
-Vorzugsrichtung. Der Vergleichsfall ohne Stroemung ist ates_2D.py.
+Modellfehler, sondern das Standortergebnis. Deshalb reichen 1-2 Betriebs-
+jahre: es gibt nichts, was sich ueber Jahre aufladen koennte.
 
     python ates_3D.py             # 2 Betriebsjahre (rund 36 min)
     python ates_3D.py --years 1   # 1 Jahr, halbe Rechenzeit
-    python ates_3D.py --no-run    # nur Netz + .prj ansehen, nicht rechnen
+    python ates_3D.py --no-run    # nur Netz + .prj erzeugen, nicht rechnen
 
-Ergebnisse landen neben dieser Datei in ergebnisse_3d/:
-    ergebnisse_3d/ates3d_gw.pvd    fuer ParaView (zieht alle Zeitschritte)
-    ergebnisse_3d/figures/         Abbildungen, u. a. Draufsicht und
-                                   Laengsschnitt zu sechs Zeitpunkten
+Der Lauf legt neben dieser Datei einen Ordner ergebnisse_3d/ an:
 
-ZUM BEARBEITEN gibt es genau EINEN Block: das Dict FALL weiter unten.
-Netz, Zeitschritt, Loeser und Ausgabe stehen darunter, sind eingestellt und
-begruendet. Der Motor liegt im Unterordner modell/ und wird nicht angefasst.
+    ergebnisse_3d/
+        ates3d_gw.pvd           fuer ParaView - zieht alle Zeitschritte
+        ates3d_gw_ts_*.vtu      ein VTU je Ausgabeschritt
+        csv/                    alle Zahlen des Laufs
+            zeitreihe.csv           Brunnentemperatur, Massenstrom, Leistung,
+                                    Druck, Energien, Fahnendrift je Schritt
+            monatsbilanz.csv        Bedarf gegen Lieferung je Monat
+            kennzahlen_jahr.csv     eta, Deckungsgrad, Foerdertemperatur je Jahr
+            pruefblatt.csv          Ampeltabelle mit Schwellen und Diagnosen
+            konfiguration.csv       womit tatsaechlich gerechnet wurde
+        figures/                Abbildungen; 7_draufsicht.png und
+                                8_laengsschnitt.png zeigen die Drift
+
+ZUM BEARBEITEN gibt es genau EINEN Block: das Dict FALL gleich unten.
+Darunter steht hinter einem zweiten Balken der komplette Rechenkern - der
+wird nicht angefasst.
+
+Hinweise zum Auswerten
+----------------------
+ParaView: die .pvd oeffnen, nicht die einzelnen .vtu - sie zieht die ganze
+Zeitreihe als Animation mit rein. Die Farbskala fuer T fest auf
+283.15-333.15 K stellen; ParaView skaliert sonst je Zeitschritt neu, und ein
+Lauf, in dem der halbe Aquifer kocht, sieht aus wie ein gesunder.
+
+Zwei Warnungen im Pruefblatt sind normal und KEIN Fehler: "T_min unter T_amb"
+und "T_max - T_inj" sind Unter- und Ueberschwinger an der Waermefront, eine
+Eigenschaft linearer finiter Elemente. Energetisch belanglos.
+
+Der Durchlaessigkeitsbeiwert wird als kf_m_s eingetragen, nicht als
+Permeabilitaet: die Umrechnung k = kf*mu/(rho*g) macht das Skript selbst,
+und zwar mit dem mu, das OGS bei Aquifertemperatur wirklich verwendet.
+
+Die wichtigste Zahl steht im Lastprofil, nicht im Modell: der Deckungsgrad
+ist durch Summe(Einspeisung)/Summe(Entnahme) nach oben gedeckelt. Beim
+mitgelieferten Profil sind das 45.5 %.
+
+Die Geschwindigkeit im Aquiferkern messen, nicht an der Schichtgrenze: OGS
+mittelt die Sekundaergroesse darcy_velocity knotenweise ueber die
+angrenzenden Elemente, an der Grenze Aquifer/Deckgestein steht nur die halbe
+Geschwindigkeit. Sollwert im Aquifer: 0.78 m/d.
+
+Jenseits von etwa 2.7 Betriebsjahren laeuft der Picard-Iterator in einen
+Grenzzyklus - das Residuum faellt dann nicht mehr, es springt. Ein groesseres
+Iterationsbudget hilft dort nachweislich nicht, ein kleinerer Zeitschritt
+ebenso wenig. Die vorgesehenen 2 Jahre bleiben mit Abstand darunter.
 """
 from __future__ import annotations
+
+from pathlib import Path
 
 # ######################################################################
 #
@@ -129,7 +164,7 @@ FALL = {
 # ####################################################################
 #
 #   A B   H I E R   S T E H T   D E R   R E C H E N K E R N
-#   (Netz, OGS-Projektdatei, Loesen, Pruefbericht) - nicht anfassen.
+#   (Netz, OGS-Projektdatei, Loesen, CSV, Abbildungen)
 #
 # ####################################################################
 #!/usr/bin/env python3
@@ -493,6 +528,16 @@ def build_timeseries(cfg, run, geo, cyc):
 
     ts["E_in"] = cumtrap(np.clip(ts["P"], 0, None))
     ts["E_out"] = cumtrap(np.clip(-ts["P"], 0, None))
+
+    # Bei regionaler Stroemung ist der Brunnendruck im ERSTEN Schnappschuss
+    # nicht definiert: dort steht noch die rein hydrostatische
+    # Anfangsbedingung, waehrend die Referenz den Regionalgradienten bereits
+    # enthaelt. Die Differenz waere der Gradient selbst (rund -100 kPa bei
+    # 700 m Abstand vom Koordinatenursprung), nicht der Brunnen. Als NaN
+    # markieren, damit weder das Pruefblatt noch die CSV ihn als Messwert
+    # ausgeben. Ohne Stroemung ist der Wert dort exakt 0 und bleibt stehen.
+    if len(ts["dp_well"]) and cfg.get("regional_gw", {}).get("enable", False)             and not run.axisym:
+        ts["dp_well"][0] = np.nan
     return ts
 
 
@@ -662,7 +707,7 @@ def checks(cfg, run, geo, ts, cyc, rows):
     # Jahreseintrags - ansehen ja, aber es macht die Zahlen nicht wertlos.
     # Die Grenze skaliert deshalb mit dem Hub statt pauschal bei 1 K zu stehen.
     _flow = bool(cfg.get("regional_gw", {}).get("enable", False)) and not run.axisym
-    _lift = T_inj - (cyc["T_amb_K"] - 273.15)
+    _lift = T_inj - T_amb          # beide in Kelvin -> Hub in K
     _warn = max(1.0, 0.05 * _lift) if _flow else 1.0
     st = "OK" if over <= 0.05 else ("WARNUNG" if over <= _warn else "FEHLER")
     add("T_max - T_inj", over, "K", (-50.0, 0.05), st,
@@ -1345,6 +1390,117 @@ def fig_feldschnitte(cfg, run, geo, ts, cyc, fig_dir, plt):
 # ======================================================================
 #  8) Hauptfunktion
 # ======================================================================
+# ======================================================================
+#  CSV-Export
+# ======================================================================
+def schreibe_csv(cfg, run, geo, ts, cyc, mon, rows, chks, ziel):
+    """Alle Zahlen des Laufs in EINEN Ordner, mit sprechenden Namen.
+
+    Temperaturen werden hier von Kelvin nach Grad Celsius umgerechnet:
+    intern rechnet alles in Kelvin, aber niemand liest eine
+    Brunnentemperatur in Kelvin ab. Einheiten stehen im Spaltennamen,
+    damit man beim Weiterrechnen nicht raten muss.
+    """
+    ziel = Path(ziel)
+    ziel.mkdir(parents=True, exist_ok=True)
+    K = 273.15
+    geschrieben = []
+
+    def _tab(name, kopf, zeilen):
+        if not zeilen:
+            return
+        with open(ziel / name, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(kopf)
+            w.writerows(zeilen)
+        geschrieben.append(name)
+
+    # --- 1) Zeitreihe je Ausgabeschritt -------------------------------
+    # Das ist die Datei fuer alles Zeitabhaengige: Brunnentemperatur,
+    # Massenstrom, Leistung, Druck, Energien, Frontlagen.
+    def _sp(name, key, f=None):
+        a = ts.get(key)
+        if a is None or not len(a):
+            return None
+        return (name, [(v if f is None else f(v)) for v in a])
+
+    spalten = [x for x in (
+        _sp("zeit_s",               "t"),
+        _sp("tag",                  "days"),
+        _sp("jahr",                 "days", lambda v: v / 365.25),
+        _sp("T_brunnen_C",          "T_well", lambda v: v - K),
+        _sp("T_sonde_aquifermitte_C", "T_probe", lambda v: v - K),
+        _sp("T_max_C",              "T_max", lambda v: v - K),
+        _sp("T_min_C",              "T_min", lambda v: v - K),
+        _sp("T_injektion_C",        "T_inj", lambda v: v - K),
+        _sp("massenstrom_kg_s",     "mdot"),
+        _sp("brunnenleistung_kW",   "P", lambda v: v / 1e3),
+        _sp("brunnendruck_kPa",     "dp_well", lambda v: v / 1e3),
+        _sp("E_eingespeichert_GJ",  "E_in"),
+        _sp("E_gefoerdert_GJ",      "E_out"),
+        _sp("E_im_aquifer_GJ",      "E_aq"),
+        _sp("E_im_deckgestein_GJ",  "E_cr"),
+        _sp("fahne_radius_m",       "r_front"),
+        _sp("fahne_stromab_m",      "x_front_down"),
+        _sp("fahne_stromauf_m",     "x_front_up"),
+        _sp("v_darcy_max_m_d",      "v_max", lambda v: v * 86400.0),
+        _sp("aquifer_ueber_50C_pct", "frac_hot"),
+    ) if x is not None]
+    if spalten:
+        n = len(spalten[0][1])
+        zeilen = []
+        for i in range(n):
+            zeile = []
+            for _, werte in spalten:
+                v = werte[i]
+                zeile.append("" if v != v else f"{v:.6g}")   # v != v -> NaN
+            zeilen.append(zeile)
+        _tab("zeitreihe.csv", [k for k, _ in spalten], zeilen)
+
+    # --- 2) Monatsbilanz des letzten vollen Betriebsjahres ------------
+    _tab("monatsbilanz.csv",
+         ["monat", "betriebsart", "P_soll_kW", "T_brunnen_C",
+          "E_gefordert_GJ", "E_geliefert_GJ", "deckung_pct"],
+         [[m["monat"], "laden" if m["laden"] else "foerdern",
+           f"{m['P_soll_kW']:.3f}", f"{m['T_well_C']:.3f}",
+           f"{m['E_gefordert_GJ']:.4f}", f"{m['E_geliefert_GJ']:.4f}",
+           f"{m['deckung_pct']:.2f}"] for m in (mon or [])])
+
+    # --- 3) Kennzahlen je Betriebsjahr --------------------------------
+    if rows:
+        with open(ziel / "kennzahlen_jahr.csv", "w", newline="",
+                  encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            w.writerows([{k: (round(v, 4) if isinstance(v, float) else v)
+                          for k, v in r.items()} for r in rows])
+        geschrieben.append("kennzahlen_jahr.csv")
+
+    # --- 4) Pruefblatt -------------------------------------------------
+    _tab("pruefblatt.csv",
+         ["pruefgroesse", "wert", "einheit", "ok_von", "ok_bis",
+          "status", "diagnose"],
+         [[c["name"], f"{c['val']:.4g}", c["unit"], c["band"][0],
+           c["band"][1], c["status"], c["diag"]] for c in chks])
+
+    # --- 5) Was tatsaechlich gerechnet wurde ---------------------------
+    # Ohne diese Datei laesst sich spaeter nicht mehr sagen, mit welchen
+    # Werten ein Ergebnisordner entstanden ist.
+    def _flach(d, pre=""):
+        o = []
+        for k, v in d.items():
+            if isinstance(v, dict):
+                o += _flach(v, pre + k + ".")
+            else:
+                o.append((pre + k, v))
+        return o
+    _tab("konfiguration.csv", ["schluessel", "wert"],
+         [[k, v] for k, v in _flach(cfg)])
+
+    print(f"  [csv] {len(geschrieben)} Dateien -> {ziel}")
+    return geschrieben
+
+
 def report(cfg, out_dir=None, curves=None, rate_mult=None, report_dir=None):
     # Windows-Konsolen laufen oft auf cp1252 und wirfen bei Zeichen wie "−"
     # (U+2212) oder "ρ" einen UnicodeEncodeError - der Bericht wuerde daran
@@ -1377,22 +1533,7 @@ def report(cfg, out_dir=None, curves=None, rate_mult=None, report_dir=None):
     fig_dir = rep / "figures"
     fig_dir.mkdir(exist_ok=True)
 
-    # --- CSV ---------------------------------------------------------
-    if rows:
-        with open(rep / f"{run.prefix}_kennzahlen.csv", "w", newline="",
-                  encoding="utf-8") as fh:
-            w = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
-            w.writeheader()
-            w.writerows([{k: (round(v, 3) if isinstance(v, float) else v)
-                          for k, v in r.items()} for r in rows])
-    with open(rep / f"{run.prefix}_pruefblatt.csv", "w", newline="",
-              encoding="utf-8") as fh:
-        w = csv.writer(fh)
-        w.writerow(["pruefgroesse", "wert", "einheit", "ok_von", "ok_bis",
-                    "status", "diagnose"])
-        for c in chks:
-            w.writerow([c["name"], f"{c['val']:.4g}", c["unit"],
-                        c["band"][0], c["band"][1], c["status"], c["diag"]])
+    schreibe_csv(cfg, run, geo, ts, cyc, mon, rows, chks, rep / "csv")
 
     # --- Konsole -----------------------------------------------------
     print("\n  " + "=" * 74)
@@ -1461,15 +1602,16 @@ def auto_report(cfg, out_dir=None, curves=None, rate_mult=None, report_dir=None)
         return None
 
 # ####################################################################
-#  Der Pruefbericht steht oben in dieser Datei. Der Rechenkern
-#  importiert ihn als Modul "ates_report" - also melden wir eines an,
-#  statt den Kern anzufassen.
+#  Der Pruefbericht steht oben in dieser Datei. Der Rechenkern importiert
+#  ihn als Modul "ates_report" - also melden wir eines an, statt den Kern
+#  anzufassen.
 # ####################################################################
 import sys as _sys
 import types as _types
 _mod = _types.ModuleType("ates_report")
-for _n in ("auto_report", "report"):
-    setattr(_mod, _n, globals()[_n])
+for _n in ("auto_report", "report", "schreibe_csv"):
+    if _n in globals():
+        setattr(_mod, _n, globals()[_n])
 _sys.modules["ates_report"] = _mod
 #!/usr/bin/env python3
 """
@@ -2638,9 +2780,6 @@ C["solver"]["nonlinear_iter"] = 50
 # --- Zeit und Ausgabe -------------------------------------------------
 C["time"]["dt_seconds"] = 86400.0
 C["time"]["output_every_n_steps"] = 5    # dichte Ausgabe: die Drift ist schnell
-# Absolut neben diese Datei, nicht relativ zum Arbeitsverzeichnis:
-# sonst landen die Ergebnisse dort, wo man das Skript zufaellig
-# aufgerufen hat.
 C["output"]["out_dir"] = str(Path(__file__).resolve().parent / "ergebnisse_3d")
 C["output"]["prefix"] = "ates3d_gw"
 

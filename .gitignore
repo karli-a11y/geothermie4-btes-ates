@@ -20,6 +20,7 @@ solutions_raw/
 # Sim-Output und Mesh-Zwischendateien
 **/out/
 **/out_*/
+**/ergebnisse_*/
 **/figures/
 *.msh
 *.vtu
