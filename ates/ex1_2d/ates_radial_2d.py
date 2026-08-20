@@ -318,9 +318,23 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     m = cfg["mesh"]
 
     # --- radiale Segmente: (r0, r1, n_cells, progression) ---
-    rsegs = [(0.0,      r_well,        m["n_r_well"], 1.0),
-             (r_well,   m["r_fine_m"], m["n_r_fine"], m["bias_r_fine"]),
-             (m["r_fine_m"], r_max,    m["n_r_far"],  m["bias_r_far"])]
+    # Optional vierteilig: Brunnen | Nahfeld (stark gestaffelt) | Fahnenband
+    # (nahezu gleichmaessig) | Fernfeld. Der Sinn: mit EINER geometrischen
+    # Progression vom Brunnen bis zum Fahnenrand wird entweder der Brunnen zu
+    # grob oder der Fahnenrand zu fein. Sobald mesh.r_near_m gesetzt ist, wird
+    # das Nahfeld vom Fahnenband getrennt. Ohne den Schluessel bleibt es beim
+    # alten Dreisatz (abwaertskompatibel).
+    if m.get("r_near_m"):
+        rsegs = [(0.0,           r_well,        m["n_r_well"], 1.0),
+                 (r_well,        m["r_near_m"], m["n_r_near"],
+                  m.get("bias_r_near", 1.05)),
+                 (m["r_near_m"], m["r_fine_m"], m["n_r_fine"],
+                  m.get("bias_r_fine", 1.006)),
+                 (m["r_fine_m"], r_max,         m["n_r_far"],  m["bias_r_far"])]
+    else:
+        rsegs = [(0.0,      r_well,        m["n_r_well"], 1.0),
+                 (r_well,   m["r_fine_m"], m["n_r_fine"], m["bias_r_fine"]),
+                 (m["r_fine_m"], r_max,    m["n_r_far"],  m["bias_r_far"])]
 
     # --- vertikale Segmente: Deckgestein grob | fein | Aquifer | fein | grob ---
     bc = m["bias_caprock"]
@@ -650,9 +664,23 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict, curves: dict) -> Path:
     # 3D-äquivalentes Brunnenvolumen (Zylinder) für die volumetrischen Quellterme.
     # OGS integriert bei axialer Symmetrie mit 2πr, sodass
     #   ∫ q · 2πr dr dz (über die Brunnenbox) = q · V_well = Gesamtstrom.
-    h_screen = (cfg["layers"]["aquifer_thickness_m"]
-                - cfg["well"]["screen_top_offset_m"]
-                - cfg["well"]["screen_bottom_offset_m"])
+    # ACHTUNG: Die Physical Group `hot_well_vol` ist die Brunnenspalte über die
+    # VOLLE Aquiferhöhe (build_mesh: well = [S[(0, aq_j)]], und der Aquifer ist
+    # dort ein einziges z-Segment). Ein Filter-Offset > 0 würde V_well
+    # verkleinern, ohne das Quellgebiet zu verkleinern — der Brunnen injizierte
+    # dann um den Faktor t_aq/h_screen zu viel. Deshalb: V_well aus der vollen
+    # Aquiferhöhe, und Offsets werden nicht stillschweigend akzeptiert.
+    _off = (cfg["well"]["screen_top_offset_m"] + cfg["well"]["screen_bottom_offset_m"])
+    if abs(_off) > 1e-9:
+        raise ValueError(
+            "well.screen_top_offset_m / screen_bottom_offset_m werden vom 2D-Netz "
+            "nicht abgebildet: die Gruppe 'hot_well_vol' umfasst immer die volle "
+            "Aquiferhöhe. Ein Offset > 0 würde den Massenstrom um den Faktor "
+            f"{cfg['layers']['aquifer_thickness_m']}/h_screen verfälschen. "
+            "Bitte beide Offsets auf 0.0 lassen (Filter über die volle "
+            "Aquiferhöhe) oder das Netz um getrennte z-Segmente erweitern."
+        )
+    h_screen = cfg["layers"]["aquifer_thickness_m"]
     r_well = cfg["well"]["r_well_m"]
     V_well = np.pi * r_well**2 * h_screen          # m^3 (Zylinder)
 
@@ -840,7 +868,9 @@ def make_plots(cfg: dict, out_dir: Path, rate_mult=None) -> None:
         print("pyvista/matplotlib fehlt, Plots uebersprungen."); return
 
     # Plots in den konventionellen figures/-Ordner der Übung (nicht out/).
-    figdir = Path(__file__).parent / "figures"; figdir.mkdir(exist_ok=True)
+    # Neben den LAUF, nicht neben das Skript: sonst ueberschreiben sich zwei
+    # Laeufe gegenseitig die Bilder und sie liegen nicht bei ihren Daten.
+    figdir = Path(out_dir) / "figures"; figdir.mkdir(parents=True, exist_ok=True)
     prefix = cfg["output"]["prefix"]
     files = sorted(out_dir.glob(f"{prefix}_ts_*_t_*.vtu"),
                    key=lambda p: int(re.search(r"_ts_(\d+)_", p.name).group(1)))
@@ -1065,16 +1095,23 @@ def make_plots(cfg: dict, out_dir: Path, rate_mult=None) -> None:
             ax.bar(yy, np.array(R_years)*100, color="#c0504d", alpha=0.85, width=0.7)
             for x, R in zip(yy, R_years):
                 ax.text(x, R*100+1, f"{R*100:.0f}%", ha="center", va="bottom", fontsize=8)
-            ax.set_xlabel("Betriebsjahr"); ax.set_ylabel("Recovery-Effizienz R [%]")
-            ax.set_title("ATES 2D radial — jährliche Recovery-Effizienz\n"
+            ax.set_xlabel("Betriebsjahr"); ax.set_ylabel("Temperaturhub-Ausnutzung [%]")
+            ax.set_title("ATES 2D radial — Ausnutzung des Temperaturhubs\n"
                          f"R = (T̄_Förder − T_amb)/(T_inj − T_amb),  T_inj={T_inj-273.15:.0f} °C, "
                          f"T_amb={T_amb-273.15:.0f} °C")
             ax.set_ylim(0, max(100, max(R_years)*100*1.15)); ax.grid(alpha=0.3, axis="y")
+            # Ohne diesen Hinweis stehen zwei verschieden definierte
+            # "Rueckgewinnungsgrade" fuer denselben Lauf nebeneinander:
+            # hier temperaturbasiert (~16 %), im Pruefblatt energetisch
+            # (~53 %). Das hat schon einmal fuer Ratlosigkeit gesorgt.
+            ax.text(0.5, -0.30, "Das ist NICHT der energetische Rueckgewinnungsgrad eta = E_aus/E_ein "
+                    "- der steht im Pruefblatt (0_pruefblatt.png) und liegt deutlich hoeher.",
+                    transform=ax.transAxes, ha="center", fontsize=9, color="#5a5a5a")
             ax.axhline(100, color="k", lw=0.5, ls=":")
             fig.tight_layout()
-            fig.savefig(figdir / "recovery_efficiency.png", dpi=130); plt.close(fig)
-            print("  saved recovery_efficiency.png")
-            print("  Recovery R pro Jahr [%]:", [f"{r*100:.0f}" for r in R_years])
+            fig.savefig(figdir / "temperaturhub_ausnutzung.png", dpi=130); plt.close(fig)
+            print("  saved temperaturhub_ausnutzung.png")
+            print("  Temperaturhub-Ausnutzung pro Jahr [%]:", [f"{r*100:.0f}" for r in R_years])
 
         # -----------------------------------------------------------
         #  5) Bedarfsführung: gelieferte vs. geforderte Förderleistung
@@ -1288,6 +1325,22 @@ def main() -> int:
     if not args.no_plots:
         print("[5/4] Plots erzeugen ...")
         make_plots(CONFIG, out_dir, rate_mult=(rate_mult if demand else None))
+
+    # --- automatischer Pruef- und Auswertebericht (ates_report.py) ----
+    # Das Modul liegt in exercises/ates/. Schlaegt der Bericht fehl, darf der
+    # Lauf davon nicht betroffen sein -> auto_report faengt selbst alles ab.
+    try:
+        import sys as _sys
+        _here = Path(__file__).resolve()
+        for _p in (_here.parent, *_here.parents):
+            if (_p / "ates_report.py").exists():
+                _sys.path.insert(0, str(_p))
+                break
+        import ates_report
+        ates_report.auto_report(CONFIG, out_dir, curves=curves,
+                                rate_mult=(rate_mult if demand else None))
+    except Exception as _e:
+        print(f"  [report] uebersprungen: {type(_e).__name__}: {_e}")
     return 0
 
 

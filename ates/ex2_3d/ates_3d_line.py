@@ -5,8 +5,12 @@ ATES 3D — Brunnen als hochpermeable Saeule mit Top-Knoten-Injektion.
 Geschichtetes Reservoir:  Cap Rock (oben) | Aquifer | Cap Rock (unten).
 Der aktive Brunnen ist eine duenne hochpermeable Saeule (Filterkies) im
 Aquifer. Wasser und Waerme werden am OBERSTEN Knoten der Saeule eingespeist:
-  - Pressure-Equation: NodalSourceTerm (Masse) am Top-Knoten
-  - Temperature: Dirichlet-T am Top-Knoten (curve-skaliert)
+  - Pressure-Equation: NodalSourceTerm am Top-Knoten. ACHTUNG: der Quellterm
+    der HT-Druckgleichung ist eine VOLUMENbilanz -> q_n = (mdot/rho_f)/n_knoten
+    in m3/s (nicht kg/s!)
+  - Temperature: DirichletWithinTimeInterval mit T_inj am Top-Knoten, NUR
+    waehrend der Beladungsintervalle. Bei Foerderung KEINE T-Randbedingung ->
+    die Entnahmetemperatur wird berechnet, nicht vorgegeben.
 Das Wasser verteilt sich ueber die hochpermeable Saeule und tritt seitlich
 in den Aquifer aus — das 3D-Analogon der 2D-Linienquelle
 (ates_radial_2d_line.py).
@@ -409,64 +413,78 @@ def convert_mesh(cfg: dict, msh_path: Path, out_dir: Path) -> dict[str, str]:
 #  Zyklus-Kurven
 # ======================================================================
 def build_cycle_curves(cfg: dict) -> dict:
-    """Zeit-stetige Kurven für Massenquellen und Brunnen-Dirichlet-T.
+    """Normierte Pumpkurve g(t) in [-1, 1] + Injektions-Intervalle.
 
-    Mass-Curves: +1 Injektion, -1 Förderung, 0 Pause.
-    T-Curves: Skalierungs-Faktor für den Dirichlet-Wert am Brunnen.
-      - Während Injektion = 1.0 (Brunnen liegt auf T_inj)
-      - Sonst T0/T_inj   (Brunnen ruht auf Hintergrund-T0)
+    Brunnenmodell (physikalisch korrekt fuer OGS-HT, identisch zu
+    ates_3d.py / ates_radial_2d.py):
+
+      * EINE Massenkurve g(t): g > 0 = Injektion am Hot Well (Cold Well
+        foerdert), g < 0 = Foerderung am Hot Well (Cold Well injiziert),
+        g = 0 = Pause. Die Amplituden (Hot Well nodal [m3/s], Cold Well
+        volumetrisch [1/s], beide durch rho_f geteilt) setzt build_prj.
+
+      * KEINE dauerhafte Dirichlet-T am Brunnen. Die Injektionstemperatur
+        wird per DirichletWithinTimeInterval NUR in den Injektions-
+        Intervallen vorgegeben. Bei Foerderung ist der Brunnen eine reine
+        Massensenke; die in der nicht-konservativen Advektion
+        rho_f*c_f*v*grad(T) implizit enthaltene Enthalpiequelle +c_f*T*Q_m
+        entzieht die Waerme beim lokalen T -> die Entnahmetemperatur wird
+        BERECHNET und die Energiebilanz kann schliessen.
+
+    Rueckgabe:
+      cycle_power         (times, values) mit g(t) in [-1, 1]
+      charge_intervals    [(t0, t1, T_inj)]  -> Dirichlet am Hot Well
+      discharge_intervals [(t0, t1, T_cold)] -> Dirichlet am Cold Well
+                          (leer im Single-Well-Modus)
     """
-    n     = cfg["cycles"]["n_cycles"]
-    t_c   = cfg["cycles"]["charge_days"]                  * DAY
-    t_sc  = cfg["cycles"]["storage_after_charge_days"]    * DAY
-    t_d   = cfg["cycles"]["discharge_days"]               * DAY
-    t_sd  = cfg["cycles"]["storage_after_discharge_days"] * DAY
-    ramp  = max(60.0, cfg["cycles"]["ramp_days"] * DAY)
+    cyc  = cfg["cycles"]
+    n    = cyc["n_cycles"]
+    ramp = max(60.0, cyc["ramp_days"] * DAY)
 
-    T0     = cfg["initial"]["T_K"]
     T_hot  = cfg["operation"]["T_hot_K"]
     T_cold = cfg["operation"]["T_cold_K"]
-    rh = T0 / T_hot
-    rc = T0 / T_cold
+    single = bool(cfg["wells"].get("single_well_mode", False))
 
-    # Phasen: (Name, Dauer, mass_hot, T_hot_curve, mass_cold, T_cold_curve)
-    phases = [
-        ("charge",          t_c,  +1.0, 1.0, -1.0, rc),
-        ("storage_after_c", t_sc,  0.0, rh,   0.0, rc),
-        ("discharge",       t_d,  -1.0, rh,  +1.0, 1.0),
-        ("storage_after_d", t_sd,  0.0, rh,   0.0, rc),
-    ]
+    # Phasendauern: charge / Pause / discharge / Pause
+    durs = [cyc["charge_days"]                  * DAY,
+            cyc["storage_after_charge_days"]    * DAY,
+            cyc["discharge_days"]               * DAY,
+            cyc["storage_after_discharge_days"] * DAY]
+    g_seq = [+1.0, 0.0, -1.0, 0.0]
 
-    times = [0.0]
-    v_mh, v_th = [0.0], [rh]
-    v_mc, v_tc = [0.0], [rc]
+    times, vals = [0.0], [0.0]
     t_now = 0.0
-
-    for _cyc in range(n):
-        for _name, dur, mh, th, mc, tc in phases:
+    for _cycle in range(n):
+        for g, dur in zip(g_seq, durs):
             if dur <= 0.0:
                 continue
-            t_now += ramp
-            times.append(t_now); v_mh.append(mh); v_th.append(th); v_mc.append(mc); v_tc.append(tc)
+            t_now += ramp                        # Rampe auf g
+            times.append(t_now); vals.append(g)
             hold = max(0.0, dur - ramp)
-            if hold > 0.0:
+            if hold > 0.0:                       # g halten
                 t_now += hold
-                times.append(t_now); v_mh.append(mh); v_th.append(th); v_mc.append(mc); v_tc.append(tc)
+                times.append(t_now); vals.append(g)
     t_now += ramp
-    times.append(t_now); v_mh.append(0.0); v_th.append(rh); v_mc.append(0.0); v_tc.append(rc)
+    times.append(t_now); vals.append(0.0)
 
-    # Single-Well-Modus: Cold Well komplett deaktivieren (Massenstrom = 0,
-    # Dirichlet-T auf Hintergrund­temperatur).
-    if cfg["wells"].get("single_well_mode", False):
-        v_mc = [0.0] * len(v_mc)
-        v_tc = [rh ] * len(v_tc)
+    # Intervall-Buchhaltung: jede Phase mit dur > 0 belegt genau ihre Dauer,
+    # Phasen mit dur = 0 entfallen -> ein Zyklus dauert sum(durs).
+    cycle_dur = sum(durs)
+    charge_intervals = ([(y * cycle_dur, y * cycle_dur + durs[0], T_hot)
+                         for y in range(n)] if durs[0] > 0.0 else [])
+    t_dis = durs[0] + durs[1]
+    discharge_intervals = ([(y * cycle_dur + t_dis,
+                             y * cycle_dur + t_dis + durs[2], T_cold)
+                            for y in range(n)]
+                           if (durs[2] > 0.0 and not single) else [])
 
     return {
-        "t_total":         t_now,
-        "cycle_mass_hot":  (np.array(times), np.array(v_mh)),
-        "cycle_mass_cold": (np.array(times), np.array(v_mc)),
-        "cycle_T_hot":     (np.array(times), np.array(v_th)),
-        "cycle_T_cold":    (np.array(times), np.array(v_tc)),
+        "t_total":             t_now,
+        "cycle_power":         (np.array(times), np.array(vals)),
+        "charge_intervals":    charge_intervals,
+        "discharge_intervals": discharge_intervals,
+        "mdot_nom_kg_s":       cfg["operation"]["mass_flow_rate_kg_s"],
+        "single_well_mode":    single,
     }
 
 
@@ -582,7 +600,15 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     A_well = 2.0 * (dx_w * dy_w + dx_w * h_screen + dy_w * h_screen)
 
     Q_total = op["mass_flow_rate_kg_s"]                  # kg/s gesamt je Brunnen
-    q_v_mass = Q_total / V_well                          # kg/(m³·s) – Druckeq.
+    # WICHTIG: Der Quellterm der HT-Druckgleichung ist eine VOLUMENbilanz
+    # (OGS-Doku "Implementation of the HT Process", Gl. 1.10/1.28): der
+    # Darcy-Fluss q = -(k/mu)(grad p + rho g) enthaelt kein rho, der Quellterm
+    # traegt daher die Einheit 1/s (Volumetric) bzw. m3/s (Nodal). Der
+    # Volumenstrom ist Q = mdot/rho_f. Ohne die Division durch rho_f wird um
+    # den Faktor rho_f (~1000) ueber-injiziert.
+    rho_f   = fluid["rho_ref_kg_m3"]
+    Q_vol   = Q_total / rho_f                            # m3/s gesamt je Brunnen
+    q_v_amp = Q_vol / V_well                             # 1/s (Volumetric, Cold Well)
 
     # A_well bleibt nur als Diagnostik im Skript erhalten (z.B. für künftige Neumann-Variante)
     _ = A_well
@@ -623,7 +649,9 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     _add_medium(media, 1, cfg["materials"]["caprock_top"],    fluid, op, disp)
     _add_medium(media, 2, cfg["materials"]["caprock_bottom"], fluid, op, disp)
     _add_medium(media, 3, well_mat,                           fluid, op, disp)
-    _add_medium(media, 4, well_mat,                           fluid, op, disp)
+    _add_medium(media, 4, (cfg["materials"]["aquifer"]
+                           if cfg["wells"].get("single_well_mode", False)
+                           else well_mat),               fluid, op, disp)
 
     # -- Time loop
     tl = _se(root, "time_loop")
@@ -637,15 +665,20 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     td = _se(p_ref, "time_discretization")
     _se(td, "type", "BackwardEuler")
 
+    # Adaptive Schrittweite: das harte Ein-/Ausschalten der
+    # DirichletWithinTimeInterval-BC (plus Flussumkehr) laesst
+    # FixedTimeStepping an den Phasenuebergaengen abbrechen.
+    dt0 = cfg["time"]["dt_seconds"]
+    n_steps = int(np.ceil(curves["t_total"] / dt0))
     ts = _se(p_ref, "time_stepping")
-    _se(ts, "type",      "FixedTimeStepping")
-    _se(ts, "t_initial", 0.0)
-    _se(ts, "t_end",     curves["t_total"])
-    steps = _se(ts, "timesteps")
-    pair = _se(steps, "pair")
-    n_steps = int(np.ceil(curves["t_total"] / cfg["time"]["dt_seconds"]))
-    _se(pair, "repeat",  n_steps)
-    _se(pair, "delta_t", cfg["time"]["dt_seconds"])
+    _se(ts, "type",        "IterationNumberBasedTimeStepping")
+    _se(ts, "t_initial",   0.0)
+    _se(ts, "t_end",       curves["t_total"])
+    _se(ts, "initial_dt",  dt0)
+    _se(ts, "minimum_dt",  dt0 / 64.0)
+    _se(ts, "maximum_dt",  dt0)
+    _se(ts, "number_iterations", "1 4 8 12")
+    _se(ts, "multiplier",        "1.5 1.0 0.5 0.25")
 
     # -- Output
     out = _se(tl, "output")
@@ -682,27 +715,35 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         _se(p, "expression", f"{init['p_Pa']} + ({gx:.6g})*x + ({gy:.6g})*y")
 
     # Basisamplituden
-    # Hot Well: Nodal-Injektion verteilt ueber die Knoten der oberen
-    # Saeulenflaeche. Ein Nodal-Quellterm legt JEDEN Knoten auf denselben
-    # Wert -> pro Knoten Q_total / n_top, Summe ueber die Flaeche = Q_total [kg/s].
+    # Hot Well: Nodal-Quellterm auf den Knoten der oberen Saeulenflaeche.
+    # Ein Nodal-Quellterm addiert JEDEM Knoten denselben Wert -> pro Knoten
+    # Q_vol / n_top [m3/s], Summe ueber die Flaeche = Q_vol = mdot/rho_f.
     import pyvista as _pv
     _ntop = max(1, _pv.read(str(Path(out_dir) / mesh_files["hot_well_top"])).n_points)
-    _const_param(params, "q_mass_amp", Q_total / _ntop)
-    _const_param(params, "T_hot_amp",  op["T_hot_K"])
-    _const_param(params, "T_cold_amp", op["T_cold_K"])
+    _const_param(params, "q_vol_amp_hot",   Q_vol / _ntop)   # m3/s je Knoten
+    # Cold Well (nur Doublet-Betrieb): volumetrisch auf dem Filtervolumen,
+    # Vorzeichen gegenlaeufig zum Hot Well (g > 0: HW injiziert, CW foerdert).
+    _const_param(params, "q_vol_amp_cold", -q_v_amp)         # 1/s
 
-    # Curve-skalierte Parameter
-    _curve_scaled_param(params, "q_mass_hot",   "cycle_mass_hot",  "q_mass_amp")
-    _curve_scaled_param(params, "q_mass_cold",  "cycle_mass_cold", "q_mass_amp")
-    _curve_scaled_param(params, "T_hot_well",   "cycle_T_hot",     "T_hot_amp")
-    _curve_scaled_param(params, "T_cold_well",  "cycle_T_cold",    "T_cold_amp")
+    # Curve-skalierte Parameter (cycle_power in [-1, 1])
+    _curve_scaled_param(params, "q_mass_hot",  "cycle_power", "q_vol_amp_hot")
+    _curve_scaled_param(params, "q_mass_cold", "cycle_power", "q_vol_amp_cold")
+
+    # Injektionstemperatur(en) fuer die DirichletWithinTimeInterval-BCs:
+    # je eindeutigem Wert ein Constant-Parameter.
+    _tinj_values = sorted({round(iv[2], 6) for iv in
+                           list(curves["charge_intervals"])
+                           + list(curves["discharge_intervals"])})
+    tinj_param = {}
+    for _i, _Ti in enumerate(_tinj_values):
+        _nm = "T_inj" if len(_tinj_values) == 1 else f"T_inj_{_i}"
+        _const_param(params, _nm, _Ti)
+        tinj_param[round(_Ti, 6)] = _nm
 
     # -- Curves
     cv = _se(root, "curves")
-    for name in ("cycle_mass_hot", "cycle_mass_cold",
-                 "cycle_T_hot",    "cycle_T_cold"):
-        t, v = curves[name]
-        _curve_xml(cv, name, t, v)
+    t, v = curves["cycle_power"]
+    _curve_xml(cv, "cycle_power", t, v)
 
     # -- Process variables
     pvars = _se(root, "process_variables")
@@ -720,18 +761,25 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         _se(bc, "mesh",      Path(mesh_files[face]).stem)
         _se(bc, "type",      "Dirichlet")
         _se(bc, "parameter", "T0")
-    # Brunnentemperatur Dirichlet-BC auf Filterbox-Volumen.
-    # (Hinweis: Eine 2nd-type/Neumann-Variante auf der Brunnenhülle ist
-    # physikalisch sauberer, in OGS HT auf inneren Trennflächen aber
-    # numerisch instabil ohne SUPG-artige Stabilisierung.)
-    # Hot Well: Dirichlet-T am Top-Knoten der Saeule (curve-skaliert).
-    # Cold Well bleibt im Single-Well-Modus auf Hintergrund-T (Volumen).
-    for mesh_key, param in (("hot_well_top",  "T_hot_well"),
-                            ("cold_well_vol", "T_cold_well")):
+    # Brunnen: Injektionstemperatur NUR waehrend der Injektions-Intervalle
+    # (DirichletWithinTimeInterval). Bei Foerderung/Ruhe KEIN T-Zwang am
+    # Brunnen: Dirichlet-Knoten sind unbegrenzte Quellen/Senken, damit waere
+    # die Foerdertemperatur vorgegeben statt berechnet und die Energiebilanz
+    # koennte nicht schliessen. Die Enthalpie der Massensenke entzieht der in
+    # der nicht-konservativen Advektion enthaltene Term c_f*T*Q_m automatisch
+    # beim lokalen T.
+    _T_intervals = [(Path(mesh_files["hot_well_top"]).stem, t0, t1, Ti)
+                    for t0, t1, Ti in curves["charge_intervals"]]
+    _T_intervals += [(Path(mesh_files["cold_well_vol"]).stem, t0, t1, Ti)
+                     for t0, t1, Ti in curves["discharge_intervals"]]
+    for _mesh, t0, t1, Ti in _T_intervals:
         bc = _se(bcs_T, "boundary_condition")
-        _se(bc, "mesh",      Path(mesh_files[mesh_key]).stem)
-        _se(bc, "type",      "Dirichlet")
-        _se(bc, "parameter", param)
+        _se(bc, "mesh",      _mesh)
+        _se(bc, "type",      "DirichletWithinTimeInterval")
+        _se(bc, "parameter", tinj_param[round(Ti, 6)])
+        ti = _se(bc, "time_interval")
+        _se(ti, "start", f"{t0:.6e}")
+        _se(ti, "end",   f"{t1:.6e}")
 
     # Druck
     pv_p = _se(pvars, "process_variable")
@@ -758,16 +806,19 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         else:
             _se(bc, "parameter", "p0")
     sts_p = _se(pv_p, "source_terms")
-    # Hot Well: Masseninjektion als Nodal-Quellterm am Top-Knoten der Saeule.
+    # Hot Well: Volumenquelle als Nodal-Quellterm auf der oberen Stirnflaeche
+    # der Saeule; Einheit m3/s je Knoten (Volumenbilanz, s. q_vol_amp_hot).
     st = _se(sts_p, "source_term")
     _se(st, "mesh",      Path(mesh_files["hot_well_top"]).stem)
     _se(st, "type",      "Nodal")
     _se(st, "parameter", "q_mass_hot")
-    # Cold Well: im Single-Well-Modus per Kurve deaktiviert (q_mass_cold = 0).
-    st = _se(sts_p, "source_term")
-    _se(st, "mesh",      Path(mesh_files["cold_well_vol"]).stem)
-    _se(st, "type",      "Volumetric")
-    _se(st, "parameter", "q_mass_cold")
+    # Cold Well: nur im Doublet-Betrieb. Im Single-Well-Modus gibt es keinen
+    # zweiten Brunnen -> Quellterm ganz weglassen.
+    if not cfg["wells"].get("single_well_mode", False):
+        st = _se(sts_p, "source_term")
+        _se(st, "mesh",      Path(mesh_files["cold_well_vol"]).stem)
+        _se(st, "type",      "Volumetric")
+        _se(st, "parameter", "q_mass_cold")
 
     # -- Solvers
     nls = _se(root, "nonlinear_solvers")
@@ -855,6 +906,7 @@ def main() -> int:
             "hot_well_surf":   f"{prefix}_physical_group_hot_well_surf.vtu",
             "cold_well_surf":  f"{prefix}_physical_group_cold_well_surf.vtu",
             "lateral_aquifer": f"{prefix}_physical_group_lateral_aquifer.vtu",
+            "hot_well_top":    f"{prefix}_physical_group_hot_well_top.vtu",
         }
 
     print("[3/3] OGS-Projektdatei erzeugen ...")
@@ -866,7 +918,22 @@ def main() -> int:
         return 0
 
     print(">>> OGS starten")
-    return run_ogs(prj_path)
+    rc = run_ogs(prj_path)
+    # --- automatischer Pruef- und Auswertebericht (ates_report.py) ----
+    # Das Modul liegt in exercises/ates/. Schlaegt der Bericht fehl, darf der
+    # Lauf davon nicht betroffen sein -> auto_report faengt selbst alles ab.
+    try:
+        import sys as _sys
+        _here = Path(__file__).resolve()
+        for _p in (_here.parent, *_here.parents):
+            if (_p / "ates_report.py").exists():
+                _sys.path.insert(0, str(_p))
+                break
+        import ates_report
+        ates_report.auto_report(CONFIG, out_dir, curves=curves)
+    except Exception as _e:
+        print(f"  [report] uebersprungen: {type(_e).__name__}: {_e}")
+    return rc
 
 
 if __name__ == "__main__":

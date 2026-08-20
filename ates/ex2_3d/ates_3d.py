@@ -320,6 +320,36 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     if surf_lat_aq:
         gmsh.model.addPhysicalGroup(2, surf_lat_aq, tag=14, name="lateral_aquifer")
 
+    # Zustromflaeche getrennt ausweisen. Grund: die Lateralflaeche traegt eine
+    # DRUCK-Randbedingung (der regionale Gradient), aber keine fuer die
+    # Temperatur. Ein Zustromrand ohne vorgeschriebene Temperatur ist bei
+    # advektionsdominierter Stroemung schlecht gestellt - die Galerkin-
+    # Diskretisierung erzeugt dort Oszillationen. Gemessen an einem Lauf ohne
+    # diese Gruppe: der Zustromrand schwankte zwischen 1.8 und 23.7 GradC,
+    # obwohl dort 10 GradC anstroemen. Die ABSTROMflaeche bleibt bewusst frei,
+    # sonst koennte die Waermefahne das Modell nicht verlassen - und genau das
+    # ist im Stroemungsfall die Aussage.
+    _gw = cfg.get("regional_gw", {})
+    if surf_lat_aq and _gw.get("enable", False):
+        import math as _m
+        _ang = _m.radians(float(_gw.get("direction_deg", 0.0)))
+        _ex, _ey = _m.cos(_ang), _m.sin(_ang)
+        _proj = {}
+        for _t in surf_lat_aq:
+            _bb = gmsh.model.getBoundingBox(2, _t)
+            _cx, _cy = 0.5 * (_bb[0] + _bb[3]), 0.5 * (_bb[1] + _bb[4])
+            _proj[_t] = _cx * _ex + _cy * _ey
+        _lo, _hi = min(_proj.values()), max(_proj.values())
+        # Nur die stromaufwaertige Flaeche. Die seitlichen Flaechen liegen
+        # projiziert in der Mitte und werden mit der 25-%-Schwelle nicht
+        # erfasst - dort ist die Stroemung wandparallel, ein T-Zwang waere
+        # dort falsch.
+        _thr = _lo + 0.25 * (_hi - _lo)
+        _inflow = sorted(t for t, v in _proj.items() if v <= _thr)
+        if _inflow:
+            gmsh.model.addPhysicalGroup(2, _inflow, tag=15,
+                                        name="lateral_inflow")
+
     # Hülle der Brunnenbox (für Distanzfeld)
     well_surfaces: list[int] = []
     for tag in vol_hw:
@@ -359,7 +389,7 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
 
 def _mesh_files(cfg: dict) -> dict[str, str]:
     prefix = cfg["output"]["prefix"]
-    return {
+    d = {
         "domain":          f"{prefix}_domain.vtu",
         "top":             f"{prefix}_physical_group_top.vtu",
         "bottom":          f"{prefix}_physical_group_bottom.vtu",
@@ -367,6 +397,9 @@ def _mesh_files(cfg: dict) -> dict[str, str]:
         "hot_well_surf":   f"{prefix}_physical_group_hot_well_surf.vtu",
         "lateral_aquifer": f"{prefix}_physical_group_lateral_aquifer.vtu",
     }
+    if cfg.get("regional_gw", {}).get("enable", False):
+        d["lateral_inflow"] = f"{prefix}_physical_group_lateral_inflow.vtu"
+    return d
 
 
 def _safe_name(name):
@@ -622,6 +655,8 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     _mesh_keys = ["domain", "top", "bottom", "hot_well_vol", "hot_well_surf"]
     if "lateral_aquifer" in mesh_files:
         _mesh_keys.append("lateral_aquifer")
+    if "lateral_inflow" in mesh_files:
+        _mesh_keys.append("lateral_inflow")
     for k in _mesh_keys:
         _se(meshes, "mesh", mesh_files[k])
 
@@ -748,6 +783,14 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     for face in ("top", "bottom"):
         bc = _se(bcs_T, "boundary_condition")
         _se(bc, "mesh",      Path(mesh_files[face]).stem)
+        _se(bc, "type",      "Dirichlet")
+        _se(bc, "parameter", "T0")
+    # Zustromrand: anstroemendes Grundwasser hat Hintergrundtemperatur.
+    # Ohne diese Bedingung ist die Temperatur am Zustrom unbestimmt und die
+    # Loesung oszilliert dort (siehe Kommentar bei der Physical Group).
+    if "lateral_inflow" in mesh_files:
+        bc = _se(bcs_T, "boundary_condition")
+        _se(bc, "mesh",      Path(mesh_files["lateral_inflow"]).stem)
         _se(bc, "type",      "Dirichlet")
         _se(bc, "parameter", "T0")
     # Brunnen: Injektionstemperatur T_inj NUR während der Beladungs-Intervalle
@@ -942,6 +985,22 @@ def main() -> int:
                 rate_mult[mo] = 0.5 * rate_mult[mo] + 0.5 * target
             print("  T_prod_avg [degC]:", {mo: round(T-273.15, 1) for mo, T in Tp.items()})
             print("  rate_factors:", [round(x, 2) for x in rate_mult])
+    # --- automatischer Pruef- und Auswertebericht (ates_report.py) ----
+    # Das Modul liegt in exercises/ates/. Schlaegt der Bericht fehl, darf der
+    # Lauf davon nicht betroffen sein -> auto_report faengt selbst alles ab.
+    try:
+        import sys as _sys
+        _here = Path(__file__).resolve()
+        for _p in (_here.parent, *_here.parents):
+            if (_p / "ates_report.py").exists():
+                _sys.path.insert(0, str(_p))
+                break
+        import ates_report
+        ates_report.auto_report(CONFIG, out_dir, curves=curves,
+                                rate_mult=(rate_mult if demand else None))
+    except Exception as _e:
+        print(f"  [report] uebersprungen: {type(_e).__name__}: {_e}")
+
     return 0
 
 

@@ -8,7 +8,7 @@ mit **OpenGeoSys 6**. Zwei Systemtypen, jeweils in 2D und 3D:
 | `btes/ex1_2d`                     | BTES — radialsymmetrische Einzelsonde (2D, r-z)        | ~30 s      |
 | `btes/ex2_3d`                     | BTES — Sondenfeld 3×3 in 3D (Volumenquelle)            | ~10–30 min |
 | `btes/ex2_3d` · `btes_3d_bhe.py`  | BTES 3D fortgeschritten — echte U-Rohr-Sonden (`HEAT_TRANSPORT_BHE`, §7.3) | ~15–20 min |
-| `ates/ex1_2d`                     | ATES — radialsymmetrischer Single-Well (2D, r-z)       | ~1 min     |
+| `ates/ex1_2d`                     | ATES — radialsymmetrischer Single-Well (2D, r-z)       | ~4 min (2 a) · ~9 min (5 a); mit `production_control="demand"` ×5 |
 | `ates/ex2_3d`                     | ATES — Single-Well in 3D                               | ~15–60 min |
 | `ates/ex2_3d` · `ates_3d_line.py` | ATES 3D fortgeschritten — Brunnen als 1D-Element (§8.3) | ~15–60 min |
 
@@ -217,23 +217,47 @@ durch dichtes **Cap Rock** begrenzt (*k* ≈ 10^-18^
 m^2^). Wärme entweicht aus dem Aquifer fast nur
 leitungs­gebunden.
 
-In den Übungen wird der Brunnen vereinfacht modelliert:
+In den Übungen wird der Brunnen so modelliert:
 
-- **Druckgleichung**: volumetrischer Massen­quell­term ±Q~m~/V~screen~
-  im Filtervolumen.
-- **Temperaturgleichung**: Dirichlet-Randbedingung auf der
-  Filter-Subdomäne. Während Injektion = T~inj~, sonst ≈ T~0~.
+- **Druckgleichung**: volumetrischer Quell­term im Filtervolumen.
+  **Achtung — er ist volumetrisch, nicht massenbasiert:** OGS setzt die
+  HT-Druck­gleichung in der durch *ρ*~f~ geteilten Form an, der Quell­term
+  trägt deshalb die Einheit 1/s (Typ `Volumetric`) bzw. m^3^/s (Typ `Nodal`).
+  Ein Massen­strom *ṁ* muss vor dem Eintragen durch die Fluid­dichte geteilt
+  werden:
 
-**Genauere Brunnenmodelle.** Diese Vereinfachung (Dirichlet-Randbedingung der Temperatur am
-Brunnen­filter) ist numerisch stabil, aber idealisiert. In der
-Förder­phase pinnt sie die Brunnen­temperatur künstlich. Eine
-physikalisch korrektere Alternative ist eine **Neumann-Randbedingung
-2. Art** (vorgegebener Wärme­strom $q_n = \dot{m}\,c_{p,f}\,\Delta T$
-auf der Filter-Innen­fläche). Diese erfordert in OGS HT zusätzliche
-Stabilisierung (SUPG). Für die hier vorgesehene Auslegungs­studie
-ist die Dirichlet-Variante ausreichend. Eine genauere Brunnen-*Geometrie*
-— der Brunnen als hochpermeables 1D-Element statt als Filterbox — wird in
-Abschnitt 8.3 behandelt.
+  $$
+  q_v = rac{\dot m / 
+ho_f}{V_\mathrm{screen}}\ \ [1/\mathrm{s}]
+  \qquad	ext{bzw.}\qquad
+  q_n = rac{\dot m / 
+ho_f}{n_\mathrm{Knoten}}\ \ [\mathrm{m^3/s}]
+  $$
+
+  Wer das vergisst, injiziert um den Faktor *ρ*~f~ ≈ 1000 zu viel. Das Symptom
+  ist eindeutig: Darcy-Geschwindig­keiten von einigen 100 m/d statt ~1 m/d und
+  Brunnen­drücke von mehreren bar statt einigen kPa.
+
+- **Temperaturgleichung**: Dirichlet-Randbedingung mit *T*~inj~ auf der
+  Filter-Subdomäne — aber **nur während der Belade­intervalle**
+  (`DirichletWithinTimeInterval`). In der Förder­phase und in den Pausen gibt
+  es am Brunnen **keine** Temperatur-Randbedingung.
+
+**Warum in der Förderphase keine Temperatur-Randbedingung?** Weil die
+Förder­temperatur die *Zielgröße* der Übung ist und keine Eingabe. Klemmt man
+den Brunnen auch beim Fördern auf einen Wert (etwa auf *T*~0~), dann ist die
+Entnahme­temperatur per Konstruktion vorgegeben, der Rückgewinnungs­grad ist
+nicht mehr bestimmbar — und weil Dirichlet-Knoten unbegrenzte Quellen und
+Senken sind, kann die Energie­bilanz gar nicht aufgehen.
+
+Nötig ist der Zwang auch nicht: OGS-HT nutzt die **nicht-konservative**
+Advektions­form *ρ*~f~*c*~f~ **v**·∇*T*. Darin steckt algebraisch die implizite
+Enthalpie­quelle +*c*~f~·*T*·*Q*~m~ — eine reine Massen­senke entzieht dem
+Gestein die Wärme also automatisch bei der *lokal* herrschenden Temperatur. Die
+Entnahme­temperatur stellt sich dadurch von selbst ein.
+
+**Genauere Brunnen­geometrie.** Der Brunnen als hochpermeables 1D-Element statt
+als Filterbox wird in Abschnitt 8.3 behandelt.
 
 **Single-Well-Modus.** Alle ATES-Übungen verwenden einen **einzigen
 aktiven Brunnen**. Der Brunnen injiziert in der
@@ -259,7 +283,12 @@ Brunnen­ausbau.
 | System | Oberkante / Unterkante           | Lateralrand                                |
 |--------|----------------------------------|--------------------------------------------|
 | BTES   | Dirichlet *T*=*T*~0~, *p*=*p*~0~ | kein Fluss (2D: Symmetrieachse, 3D: isoliert) |
-| ATES   | Dirichlet *T*=*T*~0~, *p*=*p*~0~ | Aquifer-Außenseite: Dirichlet *p*=0 (Outlet) |
+| ATES   | Dirichlet *T*=*T*~0~, *p*=*p*~0~ | Aquifer-Außenseite: Dirichlet *p* (Outlet bzw. GW-Gradient), **keine** *T*-RB |
+
+Am **Brunnen** gilt zusätzlich: Dirichlet *T*=*T*~inj~ **nur während der
+Beladeintervalle** (`DirichletWithinTimeInterval`), sonst keine *T*-RB — siehe
+Abschnitt 3.2. Ein *T*-Zwang am Ausström­rand des Aquifers wäre ebenfalls falsch:
+er wirkt dort als unbegrenzte Wärme­senke.
 
 ### 3.5 Zwei Modi für den Zyklus
 
@@ -854,9 +883,15 @@ Lateralrand als Druck-Outlet (Dirichlet *p* = 0).
 
 ```
 cd ates/ex1_2d
-python ates_radial_2d.py     # ~1 min
+python ates_radial_2d.py     # ~4 min (2 Jahre), ~9 min (5 Jahre)
 python plot_results.py
 ```
+
+> **Laufzeit-Hinweis.** Der Default `well.production_control = "demand"`
+> (bedarfsgeführte Förderung) startet `demand_iterations` **vollständige
+> OGS-Läufe** nacheinander — die Gesamtzeit vervielfacht sich entsprechend.
+> Für Parametervariationen `"fixed"` setzen oder
+> `python ates_radial_2d.py --production-control fixed` aufrufen.
 
 **Relevante Konfiguration** (gemeinsame Blöcke siehe Kapitel 6):
 
@@ -892,9 +927,11 @@ Energieertrag pro Grad Δ*T* maximal ist (E~max~ / (*T*~inj~
 − *T*~0~)).
 
 **Aufgabe A4 — Aquiferdicke**
-Setze `layers.aquifer_thickness_m` auf 20, 30, 50 m (Werte unter 15 m können
-bei Default-Filterstrecke zu Konvergenzproblemen führen — dann
-`well.screen_top_offset_m` / `screen_bottom_offset_m` reduzieren). Bestimme
+Setze `layers.aquifer_thickness_m` auf 20, 30, 50 m. Der Filter läuft dabei
+immer über die volle Aquiferhöhe; `well.screen_top_offset_m` /
+`screen_bottom_offset_m` müssen auf `0.0` bleiben, weil das 2D-Netz die
+Filterstrecke nicht getrennt auflöst (das Skript bricht sonst mit einer
+Meldung ab). Bestimme
 E~max~/Dicke [GJ/m] und vergleiche die spezifische Energiedichte.
 Vergleiche zusätzlich die vertikale Ausdehnung des Plumes in Plot 2.
 
@@ -963,10 +1000,18 @@ python ates_3d.py            # 15–60 min
 python plot_results.py
 ```
 
-Phänomene, die das 2D-Modell **nicht** zeigt: **Auftrieb** (bei *β* > 0 steigt
-die heiße Fahne, der Plume wird vertikal asymmetrisch), **regionale
+Phänomene, die das 2D-Modell **nicht** zeigt: **regionale
 Grundwasserströmung** (verschiebt den Plume), **3D-Plume-Geometrie** (nicht
-mehr exakt radial).
+mehr exakt radial), **Doubletten-Interferenz** und **thermischer Durchbruch**
+zwischen warmer und kalter Seite.
+
+> **Auftrieb dagegen kann das 2D-Modell.** Die (*r*, *z*)-Ebene löst das
+> Aufsteigen der heißen Fahne vollständig auf, und `fluid.beta_1_per_K` ist
+> dort aktiv. Am Referenzstandort ist der Effekt nur klein, weil die
+> Rayleigh-Darcy-Zahl mit Ra ≈ 29 unter dem kritischen Wert 4π² ≈ 39,5 liegt.
+> Erst bei höherer Permeabilität oder *T*~inj~ wird er sichtbar — und
+> oberhalb von Ra ≈ 40 entstehen Konvektionsfinger, die echt dreidimensional
+> sind und die Axialsymmetrie brechen.
 
 **Relevante Konfiguration** (gemeinsame Blöcke siehe Kapitel 6):
 
@@ -1085,6 +1130,44 @@ Zeit­serien-Sammeldatei). Diese lassen sich direkt in **ParaView**
 öffnen, um interaktiv eigene Visualisierungen zu erstellen
 (Schnitte, Animationen, frei wählbare Felder) — siehe Abschnitt 9.6.
 
+### 9.0 Automatischer Prüfbericht (`ates_report.py`)
+
+Jeder ATES-Lauf erzeugt am Ende zusätzlich einen Prüfbericht — ohne dass du
+etwas aufrufen musst. Er landet in `<out_dir>/figures/` und
+`<out_dir>/*_pruefblatt.csv` bzw. `*_kennzahlen.csv`. Abschalten mit der
+Umgebungsvariablen `ATES_REPORT=0`.
+
+Der Grund für den Bericht: **ein Lauf kann numerisch tadellos durchlaufen und
+trotzdem physikalischen Unsinn liefern.** Zwei Fehler sieht man den Ergebnissen
+nicht an, wenn man die Vergleichszahl nicht kennt — der volumetrische Quellterm
+ohne Division durch *ρ*~f~ (Faktor 1000 zu viel Wasser) und eine
+Brunnentemperatur, die auch beim Fördern festgeklemmt ist. Der Bericht rechnet
+genau die Kennzahlen aus, an denen man beides erkennt.
+
+| Abbildung | Die Frage, die sie beantwortet |
+|---|---|
+| `0_pruefblatt.png` | **Ist dieser Lauf gesund?** Elf Kennzahlen gegen ihr plausibles Band, mit Ampel und Klartext-Diagnose. Hier zuerst hinschauen. |
+| `1_brunnentemperatur.png` | Wird die Fördertemperatur *berechnet* oder *vorgeschrieben*? Eine flache Linie in der Förderphase ist ein Modellfehler. Zeigt auch, wie viel eine Punktsonde auf halber Aquiferhöhe gegenüber dem Filtermittel zu kalt liest. |
+| `2_deckungsgrad.png` | **Trägt der Speicher die Last?** η und Deckungsgrad je Betriebsjahr, mit der Obergrenze, die sich aus dem Lastprofil selbst ergibt. |
+| `3_monatsbilanz.png` | In welchen Monaten fällt der Speicher aus — und warum? Gefordert gegen geliefert, darunter die Brunnentemperatur. |
+| `4_machbarkeitskette.png` | Ist die Anlage baubar? *T*~inj~ → ṁ → Filterbeanspruchung → Absenkung, jede Stufe gegen ihren Grenzwert. |
+| `5_energiebilanz.png` | Wohin geht die Wärme? Eingespeichert, entnommen, im Aquifer, im Deckgestein. |
+
+**Die Ampel zuerst lesen.** Steht dort `FEHLER`, ist die Zahl daneben
+wertlos — die Diagnosezeile nennt die CONFIG-Schraube. `WARNUNG` heißt: ansehen
+und einordnen, nicht zwangsläufig reparieren. Der häufigste harmlose Fall ist
+`T_min unter T_amb`: Unterschwinger bis wenige Kelvin an der Wärmefront sind eine
+Eigenschaft linearer finiter Elemente mit konsistenter Massenmatrix (sie treten
+auf, solange Δ*t* < *h*²/(6*a*)) und energetisch belanglos.
+
+**Zwei Kennzahlen werden absichtlich doppelt ausgewiesen.** η gegen den
+nominalen Eintrag ṁ·*c*~p~·Δ*T* und η *feldbasiert* gegen den tatsächlich
+gemessenen Wärmeeintrag. Der Brunnen ist während der Beladung ein auf *T*~inj~
+geklemmter Körper und leitet zusätzlich zur Massenquelle Wärme ins Gestein —
+je größer die Filterbox, desto größer der Unterschied. η feldbasiert ist die
+konservativere Zahl.
+
+
 ### 9.1 `1_well_temperature.png` — T am Brunnen/Sonde
 
 Tem­peratur­verlauf an einem Auswerte­punkt nahe der Sonde/des
@@ -1119,11 +1202,27 @@ $$
 
 Skalen­wahl im Plot: GJ.
 
-**Recovery-Effizienz:**
+**Rückgewinnungsgrad η — Definition beachten.** Energetisch ist der
+Rückgewinnungsgrad das Verhältnis von entnommener zu eingespeicherter Wärme:
 
 $$
-\eta = \frac{E_\mathrm{max} - E_\mathrm{end}}{E_\mathrm{max}}
+\eta = \frac{E_\mathrm{aus}}{E_\mathrm{ein}}, \qquad
+E_\mathrm{ein} = \int_\mathrm{Beladung} \dot m\,c_{p,f}\,(T_\mathrm{inj}-T_0)\,dt, \qquad
+E_\mathrm{aus} = \int_\mathrm{Foerderung} |\dot m|\,c_{p,f}\,(T_\mathrm{well}(t)-T_0)\,dt
 $$
+
+Dabei ist *T*~well~(*t*) eine **Messgröße** aus der Simulation — deshalb darf am
+Brunnen in der Förderphase keine Temperatur-Randbedingung stehen (Abschnitt 3.2).
+Nimm für *T*~well~ das **volumengewichtete Mittel über die Filterstrecke**, nicht
+eine Punktsonde auf halber Aquiferhöhe: bei aktivem Auftrieb liegt die heiße
+Fahne am Aquiferdach, eine Mittenhöhen-Sonde liest mehrere Kelvin zu wenig.
+
+> **Nicht verwechseln.** Die älteren Plot-Skripte geben als „Recovery" den
+> Ausdruck (*E*~max~ − *E*~end~)/*E*~max~ aus. Das ist eine **Entladequote**:
+> darin zählt alles als „gewonnen", was bis zum Laufende aus dem Bilanzvolumen
+> verschwunden ist — auch die Wärme, die ins Deckgestein abgeflossen ist. Sie
+> fällt systematisch zu günstig aus und ist nicht der energetische
+> Rückgewinnungsgrad.
 
 ![η-Schemakurve](figures_illustrations/eta_definition.png)
 
@@ -1141,10 +1240,11 @@ wider. Realer BTES erreicht 30–80 %, ATES bei guter Auslegung 50–80 %.
   Das ist die *theoretische* zugeführte Wärme­menge pro Lade­phase.
 - *max. integrierte Energie E*~max~: über die gesamte Domain
   integriert ((ρc~p~)~eff~ · (T − T~0~) dV).
-  Bei ATES kann *E*~max~ die Injektion deutlich übersteigen,
-  weil die Dirichlet-T-Randbedingung am Brunnenfilter implizit
-  zusätzliche Wärme zuführt, um *T*~well~ = *T*~inj~
-  zu halten. Ein Hinweis darauf wird mit­gedruckt.
+  Bei ATES übersteigt *E*~max~ die nominale Injektion um rund 20 %, weil der
+  Brunnen während der Beladung ein auf *T*~inj~ geklemmter Körper ist und
+  zusätzlich zur Massenquelle Wärme ins Gestein leitet. Für η deshalb beide
+  Bezugsgrößen ausweisen: *E*~ein~ nominal (ṁ·*c*~p~·Δ*T*) und *E*~ein~
+  feldbasiert (Zuwachs der im Gebiet gespeicherten Energie über die Ladesaison).
 - *Recovery η (geclampt)*: clamped auf [0, 100 %] für die Anzeige.
   Der ungeclampte Rohwert wird ebenfalls ausgegeben. Werte > 100 %
   im Rohwert sind numerische Artefakte (Bilanz­integral knapp negativ

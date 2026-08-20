@@ -156,20 +156,29 @@ def main() -> int:
     fig.savefig(fig_dir / "4_plume_extent.png", dpi=130); plt.close(fig)
 
     # --- 5) Massenstrom + Vorlauf­temperatur über Zeit -----------
+    # build_cycle_curves liefert die normierte Pumpkurve `cycle_power` ∈ [−1,1]
+    # (Skalierung: mdot_nom_kg_s) und `charge_intervals` = [(t0, t1, T_inj), …].
+    # Eine Vorlauftemperatur existiert NUR während der Beladung; bei Förderung
+    # gibt es bewusst keine Vorgabe — die Entnahmetemperatur ist Ergebnis.
     from ates_radial_2d import build_cycle_curves
     cv = build_cycle_curves(CONFIG)
-    t_m, q_m = cv["cycle_mass"]
-    t_T, q_T = cv["cycle_T"]
-    m_nom = CONFIG["operation"]["mass_flow_rate_kg_s"]
-    T_hot = CONFIG["operation"]["T_hot_K"]
+    t_g, g = cv["cycle_power"]
+    m_nom = cv["mdot_nom_kg_s"]
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 5.5), sharex=True)
-    ax1.plot(t_m / DAY, q_m * m_nom, lw=1.5, color="tab:orange")
+    ax1.plot(t_g / DAY, g * m_nom, lw=1.5, color="tab:orange")
     ax1.axhline(0, color="k", lw=0.6)
     ax1.set_ylabel("Massenstrom m_dot [kg/s]")
     ax1.set_title("Schaltprofil — Massenstrom und Vorlauf­temperatur")
     ax1.grid(True, alpha=0.3)
-    ax2.plot(t_T / DAY, q_T * T_hot - 273.15, lw=1.5, color="tab:red")
-    ax2.set_xlabel("Zeit [d]"); ax2.set_ylabel("Vorlauf-T [°C]")
+    for t0, t1, T_inj in cv["charge_intervals"]:
+        ax2.plot([t0 / DAY, t1 / DAY], [T_inj - 273.15] * 2, lw=2.5, color="tab:red",
+                 solid_capstyle="butt")
+        ax1.axvspan(t0 / DAY, t1 / DAY, color="tab:red", alpha=0.08, lw=0)
+        ax2.axvspan(t0 / DAY, t1 / DAY, color="tab:red", alpha=0.08, lw=0)
+    ax2.set_xlabel("Zeit [d]")
+    ax2.set_ylabel("Vorlauf-T [°C]")
+    ax2.set_title("rot = Beladung (T_inj per Dirichlet), sonst freie Entnahme­temperatur",
+                  fontsize=9)
     ax2.grid(True, alpha=0.3)
     fig.tight_layout()
     fig.savefig(fig_dir / "5_power_schedule.png", dpi=130); plt.close(fig)
