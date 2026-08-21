@@ -97,6 +97,25 @@ Für Parameterstudien immer zuerst die Einheitszelle: sie ist die exakte Lösung
 für die Mittensonde eines großen Feldes. Und weil reine Wärmeleitung linear in
 der Last ist, folgt aus EINEM Lauf die nötige Sondenzahl für jede
 Temperaturgrenze in geschlossener Form.
+
+Welche Sonde die kritische ist, hängt allerdings vom Betriebsfall ab, und die
+Antwort ist nicht die erwartete:
+
+  * bei NETTO-ENTNAHME (Bilanz negativ, das Feld kühlt aus) ist die Feldmitte
+    am kältesten — die Randsonden bekommen seitlich Wärme nachgeliefert;
+  * bei AUSGEGLICHENER BILANZ (Speicherbetrieb) ist es umgekehrt: der Rand
+    verliert über den Umfang Wärme und ist am kältesten, das Innere bleibt
+    nahezu gleichmäßig.
+
+Am Vollfeld mit 220 Sonden gemessen (ausgeglichene Bilanz, Jahr 2): kälteste
+Sonde +0,390 °C in der Ecke, wärmste +0,631 °C im Inneren, Spanne 0,241 K.
+Die Spiegelprobe weist davon nur 0,022 K als Netzrauschen aus, der Rest ist
+echt. Die Einheitszelle liefert +0,368 °C und liegt damit auf der sicheren
+Seite, aber sie zeigt die Feldstreuung nicht — für eine Auslegung mit knapper
+Reserve gehört ein Feldlauf dazu.
+
+Das Viertelmodell bleibt davon unberührt: es behält eine vollständige
+Feldecke und damit die kritische Sonde.
 """
 from __future__ import annotations
 
@@ -192,6 +211,8 @@ CONFIG: dict = {
         # True ersetzt das Feld durch EINE Zelle mit adiabaten Rändern: die
         # exakte Lösung für die Mittensonde eines großen Feldes. Für
         # Parameterstudien. Die Feldlast wird weiterhin durch n_x*n_y geteilt.
+        # Achtung: bei ausgeglichener Bilanz ist die Mittensonde NICHT die
+        # kälteste — das ist der Feldrand. Näheres im Kopf der Datei.
         "einheitszelle": False,
     },
 
