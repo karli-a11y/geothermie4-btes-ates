@@ -1,121 +1,35 @@
 #!/usr/bin/env python3
-"""
-BTES-Sondenfeld — Modell, Auswertung und Abbildungen in einer Datei.
+"""BTES-Sondenfeld: Modell, Auswertung und Abbildungen in einer Datei.
 
-Rechnet ein Erdsonden-Wärmespeicherfeld als reine Wärmeleitung, wertet den Lauf
-aus und erzeugt die Abbildungen. Gesteuert wird alles über CONFIG ganz oben;
-es gibt keine Kommandozeilenschalter.
+Rechnet ein Erdsonden-Waermespeicherfeld als reine Waermeleitung. Alles wird
+ueber CONFIG am Dateianfang gesteuert, es gibt keine Kommandozeilenschalter.
 
     python btes_loesung.py
 
-Was gerechnet wird, steht im Block "ablauf": Bilanz, Netz, OGS, Auswertung,
-Abbildungen lassen sich einzeln an- und abschalten. Für einen ersten Blick
-genügt "bilanz" allein — das dauert Sekunden und zeigt Energiebilanz,
-spezifische Entzugsrate und die Modellgröße, bevor irgendetwas stundenlang
-rechnet.
+Die Last wird als GESAMTLAST DES FELDES angegeben, nie je Sonde; intern wird
+durch n_x*n_y geteilt. Haeufigste Fehlerquelle beim Viertelmodell.
 
------------------------------------------------------------------------------
-DREI VEREINFACHUNGEN
------------------------------------------------------------------------------
-1) Prozess T statt HT. Das Druckfeld ist bei diesem Aufbau identisch null —
-   kein Auftrieb, keine Schwerkraft, p = 0 oben und unten, seitlich kein Rand.
-   Die Druckgleichung ist homogen, ihre einzige Lösung p = 0. Damit verschwindet
-   die Darcy-Geschwindigkeit, der Advektionsterm entfällt, übrig bleibt reine
-   Wärmeleitung. Halbiert die Unbekannten.
-   Auch mit einem regionalen Gradienten i = 2e-3 bliebe die Wärmeleitung
-   dominant: in der durchlässigsten Schicht (k ~ 5e-14 m2) ergibt sich
-   v ~ 1e-9 m/s, also 3 cm im Jahr, und eine Péclet-Zahl von 0,03. Relevant
-   würde Strömung erst bei etwa dem Achtzigfachen der Durchlässigkeit.
+Drei Vereinfachungen: Prozess T statt HT (Druckfeld ist hier identisch null,
+Peclet 0,03), wahlweise Viertelmodell (Spiegelebenen ohne Randbedingung sind
+exakt Nullflussraender), Prismennetz statt Tetraeder. Zusammen rund Faktor 130
+je Zeitschritt.
 
-2) Viertelmodell (optional). Feld, Schichten, Last und Randbedingungen sind
-   spiegelsymmetrisch zu x = 0 und y = 0. Auf einer Spiegelebene verschwindet
-   der Wärmestrom senkrecht dazu — und eine Fläche OHNE Randbedingung ist in
-   OGS genau das. Die Schnittflächen bekommen deshalb bewusst keine
-   Randbedingung; die Symmetriebedingung ist damit exakt erfüllt. Faktor 4.
-   Voraussetzung: gerade Sondenzahl je Richtung, sonst läge eine Sonde auf der
-   Schnittebene. Nachgewiesen: Wärmeinhalt Voll zu Viertel = 4,0000 bei
-   0,001 % Abweichung.
-
-3) Prismennetz. Das Temperaturfeld um eine Sonde ist quasi eindimensional
-   radial; in der Tiefe passiert außer an Kopf und Fuß fast nichts. Ein
-   2D-Grundriss wird in z extrudiert: fein in der Ebene, grob in der Tiefe,
-   mit konformen Schichtgrenzen.
-
-Zusammen etwa Faktor 130 je Zeitschritt gegenüber dem HT-Vollmodell.
-
------------------------------------------------------------------------------
-LAST — die häufigste Fehlerquelle
------------------------------------------------------------------------------
-Angegeben wird die GESAMTLAST DES FELDES, nie die Last je Sonde. Das Skript
-teilt intern durch die Sondenzahl des VOLLEN Feldes und prägt das Ergebnis
-jeder modellierten Sonde auf. Wer selbst durch die Sondenzahl des Viertels
-teilt, rechnet mit der vierfachen Last.
-
------------------------------------------------------------------------------
-REFERENZFÄLLE ZUM NACHRECHNEN
------------------------------------------------------------------------------
-Vier geprüfte Kombinationen aus Sondenzahl und Last. Zum Nachrechnen genügt es,
-drei Zeilen in CONFIG zu setzen und field.einheitszelle = True zu lassen — dann
-ist jeder Fall in gut einer Minute durch. Angegeben ist das tiefste
-Fluidminimum im dreißigsten Betriebsjahr.
+Referenzfaelle, je mit field.einheitszelle = True in gut einer Minute
+nachzurechnen; Fluidminimum im 30. Betriebsjahr:
 
   Fall  n_x  n_y  Reduktion   W/m   Fluid J30   Ergebnis
-  ----  ---  ---  ---------  -----  ---------  ------------------------------
    A     22   10     0 %      36.0    -55.18   friert ein
-   B     22   10    23 %      25.9     +0.42   hält 0 °C, keine Reserve
-   C     26   14    23 %      15.7     +4.21   hält 4 °C
-   D     22   10    25 %      25.0     +5.27   hält 4 °C, gleiche Sondenzahl
+   B     22   10    23 %      25.9     +0.42   haelt 0 C, keine Reserve
+   C     26   14    23 %      15.7     +4.21   haelt 4 C
+   D     22   10    25 %      25.0     +5.27   haelt 4 C, gleiche Sondenzahl
 
-Fall A ist die Aufgabenstellung wie geliefert: der Entnahme steht nur halb so
-viel Beladung gegenüber, das Feld kühlt Jahr für Jahr weiter aus. Keine
-Sondenzahl repariert das — ein Saisonalspeicher verschiebt Wärme INNERHALB
-eines Jahres, ein dauerhaftes Defizit kann er nicht liefern.
+Die kritische Sonde haengt vom Betriebsfall ab: bei Netto-Entnahme ist es die
+Feldmitte, bei ausgeglichener Bilanz der Rand (Umfangsverlust). Am Vollfeld
+gemessen: kaelteste Sonde +0,390 C in der Ecke, waermste +0,631 C innen.
+Das Viertelmodell behaelt eine Feldecke und damit die kritische Sonde.
 
-Fall B schließt die Jahresbilanz allein über den Bedarf. Die 23 % ergeben sich
-aus Solarertrag geteilt durch Bedarf; das Skript rechnet den Wert selbst aus und
-meldet ihn bei jedem Lauf. Damit genügen die vorhandenen 220 Sonden — aber nur
-knapp, mit 0,42 K Abstand zur Vereisung.
-
-Fall C und D erreichen beide die Fördergrenze von 4 °C, auf zwei verschiedenen
-Wegen: C über mehr Bohrungen bei gleichem Bedarf, D über zwei Prozentpunkte
-mehr Reduktion bei gleicher Sondenzahl. **Zwei Prozentpunkte Reduktion ersetzen
-144 Bohrungen** — das ist die wirtschaftlich entscheidende Zahl.
-
-Der Vergleich zeigt außerdem den Zielkonflikt bei der Auslastung. B und D
-liegen mit 25,9 bzw. 25,0 W/m mitten im Literaturbereich für Erdwärmesonden
-(20 bis 70 W/m). C nutzt die Sonden mit 15,7 W/m nur noch schwach aus — man
-bezahlt Bohrungen, die kaum belastet werden.
-
------------------------------------------------------------------------------
-RECHENZEITEN (üblicher Arbeitsplatzrechner)
------------------------------------------------------------------------------
-    Einheitszelle, 30 Jahre                    Sekunden bis Minuten
-    Viertelfeld 220 Sonden, 30 Jahre           etwa 6 h
-    Vollfeld 220 Sonden, 30 Jahre              etwa 80 h
-
-Für Parameterstudien immer zuerst die Einheitszelle: sie ist die exakte Lösung
-für die Mittensonde eines großen Feldes. Und weil reine Wärmeleitung linear in
-der Last ist, folgt aus EINEM Lauf die nötige Sondenzahl für jede
-Temperaturgrenze in geschlossener Form.
-
-Welche Sonde die kritische ist, hängt allerdings vom Betriebsfall ab, und die
-Antwort ist nicht die erwartete:
-
-  * bei NETTO-ENTNAHME (Bilanz negativ, das Feld kühlt aus) ist die Feldmitte
-    am kältesten — die Randsonden bekommen seitlich Wärme nachgeliefert;
-  * bei AUSGEGLICHENER BILANZ (Speicherbetrieb) ist es umgekehrt: der Rand
-    verliert über den Umfang Wärme und ist am kältesten, das Innere bleibt
-    nahezu gleichmäßig.
-
-Am Vollfeld mit 220 Sonden gemessen (ausgeglichene Bilanz, Jahr 2): kälteste
-Sonde +0,390 °C in der Ecke, wärmste +0,631 °C im Inneren, Spanne 0,241 K.
-Die Spiegelprobe weist davon nur 0,022 K als Netzrauschen aus, der Rest ist
-echt. Die Einheitszelle liefert +0,368 °C und liegt damit auf der sicheren
-Seite, aber sie zeigt die Feldstreuung nicht — für eine Auslegung mit knapper
-Reserve gehört ein Feldlauf dazu.
-
-Das Viertelmodell bleibt davon unberührt: es behält eine vollständige
-Feldecke und damit die kritische Sonde.
+Rechenzeit: Einheitszelle Minuten, Viertelfeld 30 a rund 6 h, Vollfeld 30 a
+rund 10 h bei 2,5 Mio. Knoten.
 """
 from __future__ import annotations
 
@@ -138,41 +52,18 @@ MONAT_D = YEAR_D / 12.0
 MONATE = ["Jan", "Feb", "Mrz", "Apr", "Mai", "Jun",
           "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"]
 
-
-# ======================================================================
-#  CONFIG
-# ======================================================================
 CONFIG: dict = {
 
-    # ==================================================================
-    #  WAS GERECHNET WIRD
-    # ==================================================================
     "ablauf": {
-        "bilanz":        True,   # Lastprofil, Energiebilanz, Modellgröße
-        "netz":          True,   # Netz und Projektdatei erzeugen
-        "ogs":           True,   # Simulation starten
-        "auswertung":    True,   # Vereisungsprüfung aus der Ausgabe
-        "abbildungen":   True,   # Geometrie, Untergrund, Lastprofil
-        "beispiellauf":  False,  # zwei Einheitszellenläufe für Abb. 4 und 5
-        "pdf":           False,  # LOESUNG.md nach PDF (braucht pandoc+Chrome)
+        "bilanz":        True,
+        "netz":          True,
+        "ogs":           True,
+        "auswertung":    True,
+        "abbildungen":   True,
+        "beispiellauf":  False,
+        "pdf":           False,
     },
 
-    # ==================================================================
-    #  DAS WICHTIGSTE ZUERST — Last, Feld, Zeitraum
-    #
-    #  Darunter bleibt alles einstellbar. Untergrund und Prozess sind
-    #  vorgegeben: gerechnet wird reine Wärmeleitung. Gebiet und Netz leiten
-    #  sich selbst aus dem Feld und der Laufzeit ab.
-    # ==================================================================
-
-    # ------------------------------------------------------------------
-    # LAST
-    # ------------------------------------------------------------------
-    # modus "solar_bedarf": das Feld sieht die Speicherbilanz
-    #     dQ(m) = kollektorflaeche * solarertrag(m) - g * bedarf(m)
-    #     mit g = 1 - reduktionsgrad_prozent / 100
-    # modus "direkt": feldlast_kW wird unverändert benutzt (12 Werte, Feld
-    #     GESAMT in kW, positiv = Beladung).
     "last": {
         "modus": "solar_bedarf",
         "kollektorflaeche_m2": 6317.0,
@@ -182,65 +73,34 @@ CONFIG: dict = {
         "bedarfsprofil": [0.1437, 0.1368, 0.1150, 0.0813, 0.0616, 0.0440,
                           0.0310, 0.0288, 0.0570, 0.0949, 0.0968, 0.1092],
 
-        # ---- DIE ZENTRALE STELLSCHRAUBE -------------------------------
-        # Um wieviel Prozent der Wärmebedarf gesenkt wird. Der Solareintrag
-        # bleibt dabei unverändert. Ein Wert je Lauf.
-        #    0 %  Bedarf wie in der Aufgabenstellung — das Feld kühlt aus
-        #   23 %  Jahresbilanz schließt sich, 220 Sonden halten 0 °C
-        #   25 %  220 Sonden halten auch die Fördergrenze von 4 °C
-        # Das Skript rechnet den Wert für eine ausgeglichene Bilanz selbst aus
-        # und meldet ihn bei jedem Lauf.
         "reduktionsgrad_prozent": 0.0,
         "feldlast_kW": None,
         "rampe_tage": 7.0,
     },
 
-    # ------------------------------------------------------------------
-    # SONDENFELD
-    # ------------------------------------------------------------------
-    # Referenzfälle siehe Kopf: A = 22/10 mit 0 % (friert ein),
-    # B = 22/10 mit 23 % (hält 0 °C), C = 26/14 mit 23 %,
-    # D = 22/10 mit 25 % (hält 4 °C bei gleicher Sondenzahl).
     "field": {
         "n_x_full": 22,
         "n_y_full": 10,
         "abstand_m": 6.0,
-        # "voll" oder "viertel" — beide liefern dieselbe Lösung, das Viertel
-        # kostet ein Viertel der Unbekannten und rund ein Sechstel der Zeit.
         "symmetrie": "voll",
-        # True ersetzt das Feld durch EINE Zelle mit adiabaten Rändern: die
-        # exakte Lösung für die Mittensonde eines großen Feldes. Für
-        # Parameterstudien. Die Feldlast wird weiterhin durch n_x*n_y geteilt.
-        # Achtung: bei ausgeglichener Bilanz ist die Mittensonde NICHT die
-        # kälteste — das ist der Feldrand. Näheres im Kopf der Datei.
         "einheitszelle": False,
     },
 
-    # ------------------------------------------------------------------
-    # ZEITRAUM
-    # ------------------------------------------------------------------
     "zeit": {
         "jahre": 30,
         "schritte_je_monat": 4,
         "ausgabe_je_n_schritte": 4,
     },
 
-    # ==================================================================
-    #  AB HIER: seltener zu ändern — aber alles bleibt offen
-    # ==================================================================
-
     "borehole": {
         "tiefe_kopf_m":  2.0,
         "tiefe_fuss_m": 159.0,
         "box_dx_m": 0.6,
         "box_dy_m": 0.6,
-        # nur für die Nachrechnung der Fluidtemperatur, nicht für die Lösung
         "r_bohrloch_m": 0.075,
         "R_b_Km_per_W": 0.10,
     },
 
-    # Gebiet: mindestens die Eindringtiefe sqrt(4*alpha*t) jenseits der
-    # äußersten Sonde, sonst sperrt der adiabate Rand die Störung ein.
     "domain": {
         "automatisch": True,
         "rand_faktor": 2.0,
@@ -250,27 +110,6 @@ CONFIG: dict = {
         "z_basis_m": 0.0,
     },
 
-    # Netz: empfindlich ist ausschließlich die Ebene an der Sondenwand.
-    # dz von 4 m auf 1 m verschiebt das Ergebnis um 14 mK, die Ebene von
-    # 0,40 m auf 0,20 m um 73 mK. Angestrebt wird box_dx/3; reißt das
-    # Ergebnis das Knotenbudget, vergröbert das Skript und sagt es.
-    # Obergrenze für die Modellgröße. Gemessen am Vollfeld mit 220 Sonden
-    # (Laufzeit skaliert mit n^1,86, Fehler aus der Netzstudie oben):
-    #
-    #   Budget   Knoten   Wand [m]    Fehler    1 Jahr   30 Jahre
-    #    1,5 M    1,50 M    0,478    > 416 mK     8 min      4,1 h
-    #    2,5 M    2,51 M    0,358      378 mK    22 min     10,5 h
-    #    4,0 M    4,00 M    0,279      292 mK    51 min     25,1 h
-    #    9,0 M    7,35 M    0,200      163 mK     2,6 h     77,8 h
-    #
-    # Der Fehler gilt für den Fall wie gegeben mit 66 K Auslenkung; bei
-    # ausgeglichener Bilanz (rund 10 K) ist er etwa ein Sechstel davon.
-    # ALLE Netze rechnen zu warm — ein grobes Netz verschmiert die
-    # Volumenquelle und macht die Sonde weniger extrem. Für einen knappen
-    # Fall taugt ein grobes Netz deshalb nie als Nachweis.
-    #
-    # Unterhalb von 0,40 m Wandauflösung liegt keine Messung vor; die
-    # 1,5-Mio.-Zeile ist nach unten offen und nur für einen ersten Blick.
     "netz": {
         "automatisch": True,
         "ziel_knoten": 2_500_000,
@@ -282,8 +121,6 @@ CONFIG: dict = {
         "dz_sondenbereich_m": None, "dz_ausserhalb_m": None,
     },
 
-    # Untergrund, von OBEN nach UNTEN. Für einen homogenen Boden genügt ein
-    # einziger Eintrag; die Sonde darf beliebig viele Schichten durchstoßen.
     "layers": [
         {"name": "Unterer Buntsandstein (suC)", "maechtigkeit_m": 6.0,
          "porositaet": 0.1542, "rho_s": 2630.0, "cp_s": 608.4, "lambda_s": 2.71},
@@ -331,7 +168,6 @@ CONFIG: dict = {
          "porositaet": 0.0114, "rho_s": 2690.0, "cp_s": 806.7, "lambda_s": 2.56},
     ],
 
-    # Porenwasser. Geht nur über die Mischung in die Stoffwerte ein.
     "fluid": {"rho": 1000.0, "cp": 4180.0, "lambda": 0.6},
 
     "initial": {"T_C": 10.0, "geothermischer_gradient_K_m": 0.0},
@@ -339,7 +175,6 @@ CONFIG: dict = {
     "ausgabe": {"prefix": "btes", "ordner": "out", "figures": "figures"},
 
     "loeser": {
-        # Reine Wärmeleitung -> Systemmatrix symmetrisch positiv definit.
         "typ": "CG", "vorkonditionierer": "DIAGONAL",
         "toleranz": 1.0e-10, "max_iter": 20000,
         "nichtlinear_max_iter": 20, "reltol_T": 1.0e-2,
@@ -348,10 +183,6 @@ CONFIG: dict = {
 
 GRENZEN = [(0.0, "Vereisung 0 °C"), (4.0, "Fördergrenze 4 °C")]
 
-
-# ======================================================================
-#  Last und Stoffwerte
-# ======================================================================
 def lastprofil(cfg: dict) -> dict:
     """Monatliches Lastprofil des FELDES [kW]; positiv = Beladung."""
     L = cfg["last"]
@@ -378,31 +209,20 @@ def lastprofil(cfg: dict) -> dict:
     if E_sol is not None:
         out["solar_MWh"] = float(E_sol.sum()) / 1e3
         out["bedarf_MWh"] = float(E_bed.sum()) / 1e3
-        # Reduktionsgrad, bei dem sich die Jahresbilanz genau schließt
         g_null = float(E_sol.sum()) / (L["waermebedarf_MWh_a"] * 1e3)
         out["faktor_bilanz_null"] = g_null
         out["reduktion_bilanz_null"] = (1.0 - g_null) * 100.0
     return out
 
-
 def _n_full(cfg) -> int:
     return int(cfg["field"]["n_x_full"]) * int(cfg["field"]["n_y_full"])
 
-
 def leistung_je_sonde_W(cfg) -> np.ndarray:
-    """Feldlast durch die Sondenzahl des VOLLEN Feldes — nie durch die des
-    Viertels. Das ist die häufigste Fehlerquelle beim Symmetriemodell."""
+    """Feldlast durch die Sondenzahl des VOLLEN Feldes — nie durch die des"""
     return lastprofil(cfg)["P_kW"] * 1000.0 / _n_full(cfg)
 
-
 def effektive_stoffwerte(mat: dict, fluid: dict) -> dict:
-    """Korn und Porenwasser mischen — genau wie der HT-Prozess es intern tut.
-
-    lambda_eff = (1-n)*lambda_s + n*lambda_f
-    (rho c)_eff = (1-n)*rho_s*cp_s + n*rho_f*cp_f
-    In die Gleichung geht nur das Produkt Dichte mal cp ein; die Aufteilung
-    ist frei und hier so gewählt, dass beide Zahlen lesbar bleiben.
-    """
+    """Korn und Porenwasser mischen — genau wie der HT-Prozess es intern tut."""
     n = float(mat["porositaet"])
     rho_eff = (1 - n) * mat["rho_s"] + n * fluid["rho"]
     rhoc = (1 - n) * mat["rho_s"] * mat["cp_s"] + n * fluid["rho"] * fluid["cp"]
@@ -410,17 +230,8 @@ def effektive_stoffwerte(mat: dict, fluid: dict) -> dict:
             "lambda": (1 - n) * mat["lambda_s"] + n * fluid["lambda"],
             "rho_c": rhoc}
 
-
 def fluid_korrektur(cfg) -> float:
-    """Faktor [K/(W/m)] von der Boxtemperatur zur Fluidtemperatur.
-
-        T_Fluid = T_Box + q' * [ ln(r_box/r_b)/(2*pi*lambda) + R_b ]
-
-    Die 0,6-m-Box ist kein Bohrloch: sie unterschätzt den Abfall zur Wand, und
-    der Bohrlochwiderstand fehlt ganz. Bei Entnahme (q' < 0) ist das Fluid
-    also kälter als die Box — hier um rund 5 K. Nachrechnung, keine
-    Modellgröße; r_b und R_b sind Annahmen und gehen linear ein.
-    """
+    """Faktor [K/(W/m)] von der Boxtemperatur zur Fluidtemperatur."""
     bh = cfg["borehole"]
     r_box = np.sqrt(bh["box_dx_m"] * bh["box_dy_m"] / np.pi)
     mitte = 0.5 * (bh["tiefe_kopf_m"] + bh["tiefe_fuss_m"])
@@ -433,36 +244,23 @@ def fluid_korrektur(cfg) -> float:
     return (np.log(r_box / bh["r_bohrloch_m"]) / (2 * np.pi * lam)
             + bh["R_b_Km_per_W"])
 
-
 def sondenzahl_fuer_grenze(cfg, T_min_C, grenze_C) -> float:
-    """Nötige Sondenzahl, damit die Fluidtemperatur grenze_C gerade hält.
-
-    Reine Wärmeleitung ist linear in der Last; bei fester Feldlast ist die
-    Last je Sonde proportional zu 1/N, also
-        T(N) - T0 = (T(N_ref) - T0) * N_ref / N
-    """
+    """Nötige Sondenzahl, damit die Fluidtemperatur grenze_C gerade hält."""
     T0 = cfg["initial"]["T_C"]
     if grenze_C >= T0 or T_min_C >= grenze_C:
         return float(_n_full(cfg))
     return _n_full(cfg) * (T_min_C - T0) / (grenze_C - T0)
 
-
-# ======================================================================
-#  Geometrie
-# ======================================================================
 def _viertel(cfg) -> bool:
     return cfg["field"].get("symmetrie", "viertel") == "viertel"
 
-
 def _zelle(cfg) -> bool:
     return bool(cfg["field"].get("einheitszelle", False))
-
 
 def _safe(name):
     keep = ("abcdefghijklmnopqrstuvwxyz"
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
     return "".join(c if c in keep else "_" for c in str(name))
-
 
 def schichtstapel(cfg):
     z = cfg["domain"]["z_basis_m"]
@@ -471,7 +269,6 @@ def schichtstapel(cfg):
         out.append({**L, "z_low": z, "z_high": z + float(L["maechtigkeit_m"])})
         z += float(L["maechtigkeit_m"])
     return out, z
-
 
 def sondenpositionen(cfg) -> list[tuple[float, float]]:
     if _zelle(cfg):
@@ -490,7 +287,6 @@ def sondenpositionen(cfg) -> list[tuple[float, float]]:
             f"ändern oder field.symmetrie = 'voll' setzen.")
     return [(x, y) for x in xs if x > 1e-9 for y in ys if y > 1e-9]
 
-
 def temperaturleitfaehigkeit(cfg) -> float:
     lam = rc = ges = 0.0
     for L in cfg["layers"]:
@@ -499,17 +295,14 @@ def temperaturleitfaehigkeit(cfg) -> float:
         lam += e["lambda"] * d; rc += e["rho_c"] * d; ges += d
     return (lam / ges) / (rc / ges)
 
-
 def eindringtiefe_m(cfg) -> float:
     t = cfg["zeit"]["jahre"] * YEAR_D * DAY
     return float(np.sqrt(4.0 * temperaturleitfaehigkeit(cfg) * t))
-
 
 def feldausdehnung(cfg):
     s = float(cfg["field"]["abstand_m"])
     return ((cfg["field"]["n_x_full"] - 1) * s / 2.0,
             (cfg["field"]["n_y_full"] - 1) * s / 2.0)
-
 
 def gebiet_halbmasse(cfg):
     d = cfg["domain"]
@@ -520,14 +313,12 @@ def gebiet_halbmasse(cfg):
                d.get("rand_faktor", 2.0) * eindringtiefe_m(cfg))
     return fx + rand, fy + rand
 
-
 def gebiet(cfg):
     if _zelle(cfg):
         h = cfg["field"]["abstand_m"] / 2.0
         return -h, -h, h, h
     LX, LY = gebiet_halbmasse(cfg)
     return (0.0, 0.0, LX, LY) if _viertel(cfg) else (-LX, -LY, LX, LY)
-
 
 def vertikale_intervalle(cfg):
     """Extrusionsintervalle: an jeder Schichtgrenze und an Sondenkopf/-fuß."""
@@ -553,10 +344,6 @@ def vertikale_intervalle(cfg):
                    "n": max(1, int(np.ceil((b - a) / dz - 1e-9)))})
     return iv, layers, z_top, z_bh_bot, z_bh_top
 
-
-# ======================================================================
-#  Netz
-# ======================================================================
 def _grundriss(cfg, mh):
     """2D-Geometrie samt Größenfeldern. gmsh muss initialisiert sein."""
     import gmsh
@@ -597,8 +384,6 @@ def _grundriss(cfg, mh):
     f_m = gmsh.model.mesh.field.add("Min")
     gmsh.model.mesh.field.setNumbers(f_m, "FieldsList", [f_1, f_2])
     gmsh.model.mesh.field.setAsBackgroundMesh(f_m)
-    # Punktgrößen AUS: sonst schlägt die Größe an den Boxecken weit ins Feld
-    # durch und groesse_im_feld_m wäre wirkungslos.
     for opt, val in [("Mesh.MeshSizeExtendFromBoundary", 0),
                      ("Mesh.MeshSizeFromPoints", 0),
                      ("Mesh.MeshSizeFromCurvature", 0),
@@ -606,14 +391,8 @@ def _grundriss(cfg, mh):
         gmsh.option.setNumber(opt, val)
     return [s_bg] + s_box, kurven
 
-
 def knoten_2d(cfg, mh) -> int:
-    """Knoten des 2D-Grundrisses — wirklich vernetzt, nicht geschätzt.
-
-    Eine analytische Formel unterschätzt hier grob, weil der Übergang zwischen
-    Feld und Fernfeld flächenmäßig dominiert. Die 2D-Vernetzung kostet
-    Sekunden und ist exakt.
-    """
+    """Knoten des 2D-Grundrisses — wirklich vernetzt, nicht geschätzt."""
     import gmsh
     gmsh.initialize()
     try:
@@ -625,9 +404,7 @@ def knoten_2d(cfg, mh) -> int:
     finally:
         gmsh.finalize()
 
-
 _NETZ_CACHE: dict = {}
-
 
 def netzparameter(cfg) -> dict:
     """Effektive Netzlängen — automatisch aus dem Feld oder von Hand."""
@@ -661,7 +438,7 @@ def netzparameter(cfg) -> dict:
                 "dz_ausserhalb_m": 3.0 * dz_bh}
 
     ziel = float(nz["ziel_knoten"])
-    f_max = float(nz["elemente_je_box"])      # nie gröber als die Boxbreite
+    f_max = float(nz["elemente_je_box"])
     f = 1.0
     mh = satz(f)
     knoten = knoten_2d(cfg, mh) * n_lagen
@@ -674,7 +451,6 @@ def netzparameter(cfg) -> dict:
     mh |= {"vergroebert": f, "knoten": knoten, "knotenlagen": n_lagen}
     _NETZ_CACHE[schluessel] = mh
     return mh
-
 
 def netz_bauen(cfg: dict, out_dir: Path) -> Path:
     """2D-Grundriss Intervall für Intervall in z extrudieren (Prismen)."""
@@ -696,8 +472,6 @@ def netz_bauen(cfg: dict, out_dir: Path) -> Path:
     geo = gmsh.model.geo
     basis, kurven = _grundriss(cfg, mh)
 
-    # Eine Extrusion über alles auf einmal ergäbe nur EIN Volumen je
-    # Grundfläche; für eigene Materialien je Schicht braucht es getrennte.
     vol_layer = {i: [] for i in range(len(layers))}
     vol_bh, cur = [], list(basis)
     for it in iv:
@@ -740,8 +514,6 @@ def netz_bauen(cfg: dict, out_dir: Path) -> Path:
     if surf_aussen:
         gmsh.model.addPhysicalGroup(2, surf_aussen, tag=202, name="lateral")
     if surf_sym:
-        # bewusst OHNE Randbedingung: eine Fläche ohne Randbedingung ist in
-        # OGS ein Nullfluss-Rand, und das ist genau die Symmetriebedingung.
         gmsh.model.addPhysicalGroup(2, surf_sym, tag=203, name="symmetrie")
 
     gmsh.model.mesh.generate(3)
@@ -752,13 +524,11 @@ def netz_bauen(cfg: dict, out_dir: Path) -> Path:
           f"{sum(i['n'] for i in iv)} Elementlagen, {n:,} Knoten")
     return msh
 
-
 def netz_dateien(cfg) -> dict:
     p = cfg["ausgabe"]["prefix"]
     return {"domain": f"{p}_domain.vtu", "top": f"{p}_physical_group_top.vtu",
             "bottom": f"{p}_physical_group_bottom.vtu",
             "sonden": f"{p}_physical_group_sonden.vtu"}
-
 
 def netz_wandeln(cfg, msh, out_dir) -> dict:
     import ogstools as ot
@@ -770,10 +540,6 @@ def netz_wandeln(cfg, msh, out_dir) -> dict:
         mesh.save(str(Path(out_dir) / fn), binary=True)
     return netz_dateien(cfg)
 
-
-# ======================================================================
-#  Lastkurve und Projektdatei
-# ======================================================================
 def lastkurve(cfg) -> dict:
     P = leistung_je_sonde_W(cfg)
     P_ref = float(np.abs(P).max())
@@ -792,18 +558,15 @@ def lastkurve(cfg) -> dict:
     now += rampe; t.append(now); v.append(0.0)
     return {"t_end": now, "kurve": (np.array(t), np.array(v)), "P_ref_W": P_ref}
 
-
 def _se(parent, tag, text=None, **attrs):
     el = ET.SubElement(parent, tag, **{k: str(v) for k, v in attrs.items()})
     if text is not None:
         el.text = str(text)
     return el
 
-
 def _prop(parent, name, value):
     p = _se(parent, "property")
     _se(p, "name", name); _se(p, "type", "Constant"); _se(p, "value", value)
-
 
 def _indent(el, lvl=0):
     pad = "\n" + lvl * "    "
@@ -816,7 +579,6 @@ def _indent(el, lvl=0):
             el[-1].tail = pad
     if lvl and not (el.tail and el.tail.strip()):
         el.tail = pad
-
 
 def prj_bauen(cfg, out_dir: Path, nf: dict, kv: dict) -> Path:
     pref, sol, fluid = cfg["ausgabe"]["prefix"], cfg["loeser"], cfg["fluid"]
@@ -844,8 +606,6 @@ def prj_bauen(cfg, out_dir: Path, nf: dict, kv: dict) -> Path:
         _prop(pr, "thermal_conductivity", e["lambda"])
         _prop(pr, "density", e["dichte"])
         _prop(pr, "specific_heat_capacity", e["cp"])
-    # Sondenmaterial: mittlere Schicht (didaktische Voreinstellung; für eine
-    # realistische Rechnung gehört hier ein Verfüllmaterial hinein)
     e = effektive_stoffwerte(lb[len(lb) // 2], fluid)
     med = _se(media, "medium", id=len(lb)); _se(med, "phases")
     pr = _se(med, "properties")
@@ -905,8 +665,6 @@ def prj_bauen(cfg, out_dir: Path, nf: dict, kv: dict) -> Path:
         b = _se(bcs, "boundary_condition")
         _se(b, "mesh", Path(nf[f]).stem)
         _se(b, "type", "Dirichlet"); _se(b, "parameter", "T0")
-    # Seitenflächen bleiben ohne Randbedingung: auf Symmetrieebenen exakt die
-    # Spiegelbedingung, außen adiabat.
     st = _se(_se(pv, "source_terms"), "source_term")
     _se(st, "mesh", Path(nf["sonden"]).stem)
     _se(st, "type", "Volumetric"); _se(st, "parameter", "q_sonde")
@@ -929,7 +687,6 @@ def prj_bauen(cfg, out_dir: Path, nf: dict, kv: dict) -> Path:
     ET.ElementTree(r).write(prj, encoding="ISO-8859-1", xml_declaration=True)
     return prj
 
-
 def ogs_starten(prj: Path) -> int:
     exe = shutil.which("ogs") or shutil.which("ogs.exe")
     if not exe:
@@ -938,10 +695,6 @@ def ogs_starten(prj: Path) -> int:
     print(">>", exe, prj, "-o", prj.parent)
     return subprocess.call([exe, str(prj), "-o", str(prj.parent)])
 
-
-# ======================================================================
-#  Bericht
-# ======================================================================
 def bericht(cfg) -> None:
     lp = lastprofil(cfg)
     n_full, n_mod = _n_full(cfg), len(sondenpositionen(cfg))
@@ -1008,20 +761,14 @@ def bericht(cfg) -> None:
             print("           Gegenmittel: netz.ziel_knoten erhöhen, weniger "
                   "Sonden, oder field.symmetrie = 'viertel'.")
 
-
-# ======================================================================
-#  Darstellung
-# ======================================================================
 SURF, INK, INK2, MUTED = "#fcfcfb", "#0b0b0b", "#52514e", "#898781"
 GRID, AXIS = "#e1e0d9", "#c3c2b7"
 C1, C2, C3, C4 = "#2a78d6", "#eb6834", "#1baf7a", "#e34948"
-
 
 def de(x, nd=1):
     """Deutsche Zahlschreibweise."""
     s = f"{x:,.{nd}f}"
     return s.replace(",", "\x00").replace(".", ",").replace("\x00", ".")
-
 
 def _plt():
     """matplotlib mit dem Stil dieser Auswertung."""
@@ -1039,25 +786,17 @@ def _plt():
         "lines.linewidth": 1.6, "legend.frameon": False})
     return plt
 
-
 def _fmt():
     from matplotlib.ticker import FuncFormatter
     return FuncFormatter(lambda v, _: de(v, 0))
-
 
 def _figdir(cfg) -> Path:
     d = HERE / cfg["ausgabe"]["figures"]
     d.mkdir(exist_ok=True)
     return d
 
-
-# ======================================================================
-#  Auswertung des Laufs
-# ======================================================================
 def zeitreihe(cfg, out: Path):
-    """Zeitreihe aus den Ergebnisdateien. Sondenlage und Last kommen aus dem
-    Lauf selbst, nicht aus CONFIG — sonst passt beides nicht zusammen, wenn
-    die Einstellungen nach dem Lauf geändert wurden."""
+    """Zeitreihe aus den Ergebnisdateien. Sondenlage und Last kommen aus dem"""
     import pyvista as pv
     pref = cfg["ausgabe"]["prefix"]
     files = sorted(glob.glob(str(out / f"{pref}_ts_*.vtu")),
@@ -1113,8 +852,6 @@ def zeitreihe(cfg, out: Path):
         rand &= ~((np.abs(pts[:, 0]) < tol) | (np.abs(pts[:, 1]) < tol))
 
     wurzel = ET.parse(str(out / f"{pref}.prj")).getroot()
-    # Der Name der Quellstärke hat sich über die Fassungen geändert; hier
-    # werden beide akzeptiert, damit auch ältere Läufe auswertbar bleiben.
     q_amp = next((float(p.findtext("value")) for p in wurzel.iter("parameter")
                   if p.findtext("name") in ("q_amp", "q_v_amp")), None)
     if q_amp is None:
@@ -1154,22 +891,14 @@ def zeitreihe(cfg, out: Path):
                   f"Fluid {zeilen[-1]['T_fluid_min_C']:+7.2f} °C")
     return zeilen, positionen, np.array(je_sonde), korr
 
-
 def auswerten(cfg, out: Path) -> None:
-    """Vereisungsprüfung: Tabellen, Abbildung und Urteil im Klartext.
-
-    Geschrieben werden drei Tabellen:
-      summary.csv            je Zeitschritt die Kennwerte über alle Sonden
-      sonden_temperaturen.csv  je Zeitschritt JEDE Sonde einzeln
-      sonden_positionen.csv    Lage und Kennung der Sonden
-    """
+    """Vereisungsprüfung: Tabellen, Abbildung und Urteil im Klartext."""
     z, positionen, je_sonde, korr = zeitreihe(cfg, out)
     with open(HERE / "summary.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(z[0]))
         w.writeheader(); w.writerows(z)
     print(f"\n-> {HERE / 'summary.csv'}")
 
-    # Lage der Sonden, aus dem Netz gelesen
     with open(HERE / "sonden_positionen.csv", "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["sonde", "x_m", "y_m"])
@@ -1177,11 +906,6 @@ def auswerten(cfg, out: Path) -> None:
             w.writerow([f"S{i:03d}", f"{x:.3f}", f"{y:.3f}"])
     print(f"-> {HERE / 'sonden_positionen.csv'}  ({len(positionen)} Sonden)")
 
-    # Jede Sonde einzeln über die Zeit. Spalten S000, S001, ... in der
-    # Reihenfolge der Positionstabelle; Werte sind die volumengewichtete
-    # Temperatur der Sondenbox in °C. Die Fluidtemperatur folgt daraus als
-    #     T_Fluid = T_Sonde + q_W_m * korr
-    # mit q_W_m aus derselben Zeile und korr = fluid_korrektur(CONFIG).
     with open(HERE / "sonden_temperaturen.csv", "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(["t_a", "q_W_m", "fluid_korrektur_K_pro_W_m"]
@@ -1205,8 +929,6 @@ def auswerten(cfg, out: Path) -> None:
     plt = _plt(); F = _fmt()
     fig, ax = plt.subplots(1, 3, figsize=(14.0, 4.5),
                            gridspec_kw={"width_ratios": [1.25, 1.0, 1.0]})
-    # Fluidtemperatur jeder einzelnen Sonde; als Band die Spreizung über das
-    # Feld, als kräftige Linie die kälteste Sonde — sie entscheidet.
     q_t = np.array([r["q_W_m"] for r in z])
     fl_alle = je_sonde + (q_t * korr)[:, None]
     fl_kalt, fl_warm = fl_alle.min(axis=1), fl_alle.max(axis=1)
@@ -1220,8 +942,6 @@ def auswerten(cfg, out: Path) -> None:
     for (g, lab), col in zip(GRENZEN, (C4, C2)):
         a.axhline(g, color=col, lw=1.3, ls="--")
     j = t > t.max() - 1.0
-    # Bei einer einzelnen Sonde sind kälteste und wärmste dieselbe; dann nur
-    # Fluid und Wand beschriften, sonst stehen zwei Namen auf einer Linie.
     a.annotate("Fluid" if n_s == 1 else "kälteste Sonde\nFluid",
                (t.max(), fl_kalt[j].min()), color=C1,
                fontsize=8.5, fontweight="bold", xytext=(5, 0),
@@ -1233,9 +953,6 @@ def auswerten(cfg, out: Path) -> None:
     a.annotate("Sondenwand", (t.max(), wand[j].max()), color=C1, alpha=0.6,
                fontsize=8, xytext=(5, 0), textcoords="offset points",
                va="center")
-    # Die Grenzlinien liegen nur 4 K auseinander und laufen quer durch das
-    # Band — beschriftet werden sie deshalb in Panel 2, wo Platz ist.
-    # Rechts nur so viel Rand, wie die Beschriftung braucht.
     a.set_xlim(0, t.max() * 1.17)
     a.set_xlabel("Betriebsjahr"); a.set_ylabel("Temperatur [°C]")
     a.set_title("Fluidtemperatur der Einheitszelle — gestrichelt die Grenzwerte"
@@ -1251,10 +968,6 @@ def auswerten(cfg, out: Path) -> None:
                    fontweight="bold", ha="right", va="bottom",
                    xytext=(0, 4), textcoords="offset points")
     b.plot(jahre, jmin, color=C1, marker="o", ms=3.4, mfc=SURF, mew=1.2)
-    # Kennzahl in die freie Ecke, nicht an die Kurve. Eine fallende Kurve
-    # läuft von oben links nach unten rechts — frei ist dann unten links.
-    # Bei fallender Kurve liegen ausserdem die Grenzlinien oben, wo die
-    # Beschriftung sonst mit ihnen kollidiert.
     steigt = jmin[-1] > jmin[0]
     b.text(0.03, 0.94 if steigt else 0.06,
            f"Jahr {jahre[-1]}:  {de(jmin[-1], 2)} °C",
@@ -1298,8 +1011,6 @@ def auswerten(cfg, out: Path) -> None:
         print(f"  Drift letzte 10 Jahre  {drift:>+8.2f} K", end="")
         print("   -> eingeschwungen" if abs(drift) < 0.3
               else "   -> läuft weiter weg")
-    # Bei der Einheitszelle SIND die Seitenränder Symmetrieebenen des
-    # unendlichen Feldes — dort gehört eine Störung hin und ist kein Fehler.
     if _zelle(cfg):
         print(f"  |dT| am Zellrand       {dR.max():>8.4f} K   -> "
               f"Symmetrieebene, Störung dort erwartet")
@@ -1307,16 +1018,11 @@ def auswerten(cfg, out: Path) -> None:
         print(f"  |dT| am Aussenrand     {dR.max():>8.4f} K", end="")
         print("   -> Gebiet gross genug" if dR.max() < 0.5
               else "   -> GEBIET ZU KLEIN, Rand faelscht mit")
-    # Auslegung aus der Linearität — ohne weitere Rechnung
     print("\n  nötige Sondenzahl bei diesem Lastprofil:")
     for g, lab in GRENZEN:
         n = sondenzahl_fuer_grenze(cfg, float(jmin.min()), g)
         print(f"    {lab:<20} {n:>10,.0f}   (vorhanden {_n_full(cfg)})")
 
-
-# ======================================================================
-#  Abbildungen zur Konfiguration
-# ======================================================================
 def abbildungen(cfg) -> None:
     from matplotlib.patches import Rectangle
     from matplotlib.colors import LinearSegmentedColormap
@@ -1324,7 +1030,6 @@ def abbildungen(cfg) -> None:
     SEQ = LinearSegmentedColormap.from_list(
         "b", ["#cde2fb", "#9ec5f4", "#5598e7", "#2a78d6", "#184f95", "#0d366b"])
 
-    # --- 1: Feld und Symmetrie ---
     nx, ny = cfg["field"]["n_x_full"], cfg["field"]["n_y_full"]
     s = cfg["field"]["abstand_m"]
     xs = np.array([-(nx - 1) * s / 2 + i * s for i in range(nx)])
@@ -1365,7 +1070,6 @@ def abbildungen(cfg) -> None:
     fig.tight_layout(); fig.savefig(FIG / "1_feld.png", dpi=150); plt.close(fig)
     print("-> 1_feld.png")
 
-    # --- 2: Untergrund ---
     layers = list(cfg["layers"])
     eff = [effektive_stoffwerte(L, cfg["fluid"]) for L in layers]
     lam = np.array([e["lambda"] for e in eff])
@@ -1419,7 +1123,6 @@ def abbildungen(cfg) -> None:
     fig.tight_layout(); fig.savefig(FIG / "2_untergrund.png", dpi=150)
     plt.close(fig); print("-> 2_untergrund.png")
 
-    # --- 3: Lastprofil ---
     lp = lastprofil(cfg); P = lp["P_kW"]
     fig, ax = plt.subplots(1, 2, figsize=(11.0, 4.2),
                            gridspec_kw={"width_ratios": [1.25, 1.0]})
@@ -1452,13 +1155,8 @@ def abbildungen(cfg) -> None:
     fig.tight_layout(); fig.savefig(FIG / "3_lastprofil.png", dpi=150)
     plt.close(fig); print("-> 3_lastprofil.png")
 
-
 def beispiellauf(cfg) -> None:
-    """Zwei Einheitszellenläufe über 30 Jahre — wie gegeben und ausgeglichen.
-
-    Kostet zusammen rund zwei Minuten und zeigt den Unterschied zwischen
-    einem Speicher und einer Auskühlung.
-    """
+    """Zwei Einheitszellenläufe über 30 Jahre — wie gegeben und ausgeglichen."""
     import copy
     import pyvista as pv
     plt = _plt(); F = _fmt(); FIG = _figdir(cfg)
@@ -1516,8 +1214,6 @@ def beispiellauf(cfg) -> None:
         ax.annotate("Fluid", (xr, Tf[j].min()), color=col, fontsize=8,
                     alpha=0.75, xytext=(6, 0), textcoords="offset points",
                     va="center")
-    # Links am Nullpunkt läge die Beschriftung auf der absinkenden roten
-    # Kurve; im rechten Rand ist auf dieser Höhe frei.
     ax.annotate("Vereisungsgrenze\ngilt für das Fluid", (xr, 0.0),
                 color=C4, fontsize=8.5, fontweight="bold", xytext=(6, -4),
                 textcoords="offset points", va="top")
@@ -1530,10 +1226,6 @@ def beispiellauf(cfg) -> None:
     fig.tight_layout(); fig.savefig(FIG / "4_beispiel.png", dpi=150)
     plt.close(fig); print("-> 4_beispiel.png")
 
-
-# ======================================================================
-#  Dokument
-# ======================================================================
 def pdf_bauen(cfg) -> None:
     """LOESUNG.md nach PDF: pandoc -> HTML -> headless Chrome."""
     md = HERE / "LOESUNG.md"
@@ -1586,10 +1278,6 @@ def pdf_bauen(cfg) -> None:
     if pdf.exists():
         print(f"-> {pdf}  ({pdf.stat().st_size/1024:.0f} kB)")
 
-
-# ======================================================================
-#  Ablauf
-# ======================================================================
 def main() -> int:
     cfg = CONFIG
     ab = cfg["ablauf"]
@@ -1639,7 +1327,6 @@ def main() -> int:
         pdf_bauen(cfg)
 
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

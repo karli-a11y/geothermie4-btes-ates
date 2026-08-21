@@ -1,134 +1,53 @@
-"""ATES 3D MIT regionaler Grundwasserstroemung, i = 0.015.
+"""ATES 3D MIT regionaler Grundwasserstroemung, i = 0,015.
 
-Die Frage: Was bleibt am Standort von der Speicherwirkung uebrig, wenn die
-natuerliche Grundwasserstroemung mitrechnet?
+Was von der Speicherwirkung uebrig bleibt, wenn die natuerliche Stroemung
+mitrechnet. Bei kf = 6e-4 m/s und i = 0,015 wandert die Waermefahne rund
+490 m im Jahr - was im Sommer eingespeichert wird, steht im Winter einen
+halben Kilometer stromab. Deshalb genuegen 1 bis 2 Betriebsjahre: es gibt
+nichts, was sich ueber Jahre aufladen koennte.
 
-Der Standort hat eine hohe Durchlaessigkeit (kf = 6e-4 m/s) UND einen steilen
-Gradienten (i = 0.015). Daraus folgt:
+    python ates_3D.py             # 2 Betriebsjahre, rund 36 min
+    python ates_3D.py --years 1   # halbe Rechenzeit
+    python ates_3D.py --no-run    # nur Netz und .prj, nicht rechnen
 
-    v_Darcy      = kf * i          = 6.0e-4 * 0.015 = 0.78 m/d
-    v_Poren      = v_Darcy / n     = 0.78 / 0.1191  = 6.53 m/d
-    v_thermisch  = v_Poren / R     = 6.53 / 4.87    = 1.34 m/d = 489 m/a
+Zum Bearbeiten gibt es genau einen Block: das Dict FALL weiter unten.
 
-Die Waermefahne wandert rund 490 m im Jahr. Was im Sommer eingespeichert
-wird, steht im Winter einen halben Kilometer weiter stromab. Das ist KEIN
-Modellfehler, sondern das Standortergebnis. Deshalb reichen 1-2 Betriebs-
-jahre: es gibt nichts, was sich ueber Jahre aufladen koennte.
+Der Lauf legt ergebnisse_3d/ an: ates3d_gw.pvd und die VTU je Zeitschritt fuer
+ParaView, csv/ mit Zeitreihe, Monatsbilanz, Jahreskennzahlen und Pruefblatt,
+figures/ mit den Abbildungen; 7_draufsicht.png und 8_laengsschnitt.png zeigen
+die Drift.
 
-    python ates_3D.py             # 2 Betriebsjahre (rund 36 min)
-    python ates_3D.py --years 1   # 1 Jahr, halbe Rechenzeit
-    python ates_3D.py --no-run    # nur Netz + .prj erzeugen, nicht rechnen
-
-Der Lauf legt neben dieser Datei einen Ordner ergebnisse_3d/ an:
-
-    ergebnisse_3d/
-        ates3d_gw.pvd           fuer ParaView - zieht alle Zeitschritte
-        ates3d_gw_ts_*.vtu      ein VTU je Ausgabeschritt
-        csv/                    alle Zahlen des Laufs
-            zeitreihe.csv           Brunnentemperatur, Massenstrom, Leistung,
-                                    Druck, Energien, Fahnendrift je Schritt
-            monatsbilanz.csv        Bedarf gegen Lieferung je Monat
-            kennzahlen_jahr.csv     eta, Deckungsgrad, Foerdertemperatur je Jahr
-            pruefblatt.csv          Ampeltabelle mit Schwellen und Diagnosen
-            konfiguration.csv       womit tatsaechlich gerechnet wurde
-        figures/                Abbildungen; 7_draufsicht.png und
-                                8_laengsschnitt.png zeigen die Drift
-
-ZUM BEARBEITEN gibt es genau EINEN Block: das Dict FALL gleich unten.
-Darunter steht hinter einem zweiten Balken der komplette Rechenkern - der
-wird nicht angefasst.
-
-Hinweise zum Auswerten
-----------------------
-ParaView: die .pvd oeffnen, nicht die einzelnen .vtu - sie zieht die ganze
-Zeitreihe als Animation mit rein. Die Farbskala fuer T fest auf
-283.15-333.15 K stellen; ParaView skaliert sonst je Zeitschritt neu, und ein
-Lauf, in dem der halbe Aquifer kocht, sieht aus wie ein gesunder.
-
-Zwei Warnungen im Pruefblatt sind normal und KEIN Fehler: "T_min unter T_amb"
-und "T_max - T_inj" sind Unter- und Ueberschwinger an der Waermefront, eine
-Eigenschaft linearer finiter Elemente. Energetisch belanglos.
-
-Der Durchlaessigkeitsbeiwert wird als kf_m_s eingetragen, nicht als
-Permeabilitaet: die Umrechnung k = kf*mu/(rho*g) macht das Skript selbst,
-und zwar mit dem mu, das OGS bei Aquifertemperatur wirklich verwendet.
-
-Die wichtigste Zahl steht im Lastprofil, nicht im Modell: der Deckungsgrad
-ist durch Summe(Einspeisung)/Summe(Entnahme) nach oben gedeckelt. Beim
-mitgelieferten Profil sind das 45.5 %.
-
-Die Geschwindigkeit im Aquiferkern messen, nicht an der Schichtgrenze: OGS
-mittelt die Sekundaergroesse darcy_velocity knotenweise ueber die
-angrenzenden Elemente, an der Grenze Aquifer/Deckgestein steht nur die halbe
-Geschwindigkeit. Sollwert im Aquifer: 0.78 m/d.
-
-Jenseits von etwa 2.7 Betriebsjahren laeuft der Picard-Iterator in einen
-Grenzzyklus - das Residuum faellt dann nicht mehr, es springt. Ein groesseres
-Iterationsbudget hilft dort nachweislich nicht, ein kleinerer Zeitschritt
-ebenso wenig. Die vorgesehenen 2 Jahre bleiben mit Abstand darunter.
+In ParaView die .pvd oeffnen und die Farbskala fuer T fest auf 283,15-333,15 K
+stellen, sonst skaliert jeder Zeitschritt neu.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-# ######################################################################
-#
-#   H I E R   S C H R A U B E N
-#
-#   Standort und Lastfall. Alles andere ist fertig eingestellt.
-#
-# ######################################################################
-
 FALL = {
 
-    # ------------------------------------------------------------------
-    #  Das Merkmal dieses Falls: die regionale Grundwasserstroemung
-    # ------------------------------------------------------------------
-    #  Aufgepraegt als linearer Druckgradient auf der Lateralflaeche des
-    #  Aquifers:  p(x) = p_hydrostatisch - rho_f * g * i * x.
-    #  Gegenprobe im Ergebnis: v_x im ungestoerten Aquifer muss kf*i sein.
-    #  ACHTUNG beim Nachmessen in ParaView: an der Grenzflaeche Aquifer/
-    #  Deckgestein mittelt OGS die Sekundaergroesse darcy_velocity ueber
-    #  beide Materialien - dort steht nur die HALBE Geschwindigkeit. Im
-    #  Aquiferkern messen.
-    "gw_gradient":        0.015,   # Standortwert
-    "gw_richtung_grad":     0.0,   # 0 Grad = Stroemung nach +x
+    "gw_gradient":        0.015,
+    "gw_richtung_grad":     0.0,
 
-    # ------------------------------------------------------------------
-    #  Lastprofil: zwoelf Monatsleistungen in Watt
-    # ------------------------------------------------------------------
-    #  Identisch zu Fall 1, damit die beiden Faelle vergleichbar sind.
-    #  P > 0 = einspeichern (laden),  P < 0 = foerdern (entladen).
     "monatsleistung_W": [
-        -595_850.0,   # Jan
-        -523_490.0,   # Feb
-        -336_450.0,   # Mrz
-          +4_975.0,   # Apr
-        +162_190.0,   # Mai
-        +343_595.0,   # Jun
-        +346_995.0,   # Jul
-        +282_210.0,   # Aug
-         +24_135.0,   # Sep
-        -281_920.0,   # Okt
-        -370_970.0,   # Nov
-        -447_005.0,   # Dez
+        -595_850.0,
+        -523_490.0,
+        -336_450.0,
+          +4_975.0,
+        +162_190.0,
+        +343_595.0,
+        +346_995.0,
+        +282_210.0,
+         +24_135.0,
+        -281_920.0,
+        -370_970.0,
+        -447_005.0,
     ],
 
-    # ------------------------------------------------------------------
-    #  Betrieb
-    # ------------------------------------------------------------------
     "T_injektion_C":   60.0,
     "T_aquifer_C":     10.0,
-    "betriebsjahre":      2,   # ueber --years ueberschreibbar
-    #
-    #  Einen Knopf fuer die Auslegungsspreizung gibt es bewusst NICHT: das
-    #  Modell rechnet im Monatsprofil-Modus immer
-    #      mdot = P_max / (c_f * (T_injektion - T_aquifer))
-    #  und liest operation.mass_flow_rate_kg_s dabei gar nicht.
+    "betriebsjahre":      2,
 
-    # ------------------------------------------------------------------
-    #  Aquifer  (Standort aus der Abgabe - identisch zu Fall 1)
-    # ------------------------------------------------------------------
     "aquifer": {
         "maechtigkeit_m":                 38.0,
         "kf_m_s":                       6.0e-4,
@@ -138,13 +57,7 @@ FALL = {
         "waermeleitfaehigkeit_korn_W_mK": 2.28,
     },
 
-    # ------------------------------------------------------------------
-    #  Deckgestein  (oben und unten gleich aufgebaut)
-    # ------------------------------------------------------------------
     "deckgestein": {
-        # 60 m je Seite. Die reine Leitfront 2*sqrt(a*t) betraegt nach
-        # 2 Jahren nur 15 m, gemessen wurde aber 31 m - der Auftrieb
-        # traegt Waerme nach oben, die Leitungsformel unterschaetzt das.
         "maechtigkeit_m":                60.0,
         "permeabilitaet_m2":          2.1e-16,
         "porositaet":                    0.05,
@@ -153,20 +66,10 @@ FALL = {
         "waermeleitfaehigkeit_korn_W_mK": 2.0,
     },
 
-    # ------------------------------------------------------------------
-    #  Brunnen
-    # ------------------------------------------------------------------
-    "filter_kantenlaenge_m": 1.0,   # quadratischer Filterkoerper im 3D-Netz
-    # Die Filterstrecke geht ueber die volle Aquifermaechtigkeit.
+    "filter_kantenlaenge_m": 1.0,
 
 }
 
-# ####################################################################
-#
-#   A B   H I E R   S T E H T   D E R   R E C H E N K E R N
-#   (Netz, OGS-Projektdatei, Loesen, CSV, Abbildungen)
-#
-# ####################################################################
 #!/usr/bin/env python3
 """ates_report.py — automatischer Prüf- und Auswertebericht nach jedem ATES-Lauf.
 
@@ -226,33 +129,25 @@ G = 9.81
 MONTHS = ("Jan", "Feb", "Mär", "Apr", "Mai", "Jun",
           "Jul", "Aug", "Sep", "Okt", "Nov", "Dez")
 
-# Farben: kategoriale Slots in fester Reihenfolge, Statusfarben getrennt.
 C_BLUE, C_ORANGE, C_AQUA, C_YELLOW = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"
 C_GOOD, C_WARN, C_CRIT = "#0d6b4f", "#a1620b", "#b3261e"
 C_INK, C_INK2, C_INK3, C_RULE = "#14171a", "#4d565e", "#808b95", "#d8dde2"
 
-
-# ======================================================================
-#  1) Lauf erkennen
-# ======================================================================
 @dataclass
 class RunInfo:
     out_dir: Path
     prefix: str
     axisym: bool
-    snapshots: list = field(default_factory=list)   # [(t_s, Path)]
+    snapshots: list = field(default_factory=list)
     complete: bool = True
 
     @property
     def t_last(self) -> float:
         return self.snapshots[-1][0] if self.snapshots else 0.0
 
-
 def detect_run(cfg: dict, out_dir=None) -> RunInfo:
     prefix = cfg["output"]["prefix"]
     out = Path(out_dir if out_dir is not None else cfg["output"]["out_dir"])
-    # Glob-Falle: "ates_3d_*" trifft auch "ates_3d_line_*". Der Separator
-    # "_ts_" trennt zuverlässig, weil er nur vor der Schrittnummer steht.
     snaps = []
     for p in out.glob(f"{prefix}_ts_*.vtu"):
         m = re.search(r"_t_([0-9.]+)\.vtu$", p.name)
@@ -260,8 +155,6 @@ def detect_run(cfg: dict, out_dir=None) -> RunInfo:
             snaps.append((float(m.group(1)), p))
     snaps.sort(key=lambda x: x[0])
 
-    # Axialsymmetrie NICHT am Dateinamen erkennen: erst die .prj fragen,
-    # sonst über die Netzausdehnung (ein Achsenmaß = 0 -> 2D).
     axisym = False
     prj = out / f"{prefix}.prj"
     if prj.exists():
@@ -272,10 +165,6 @@ def detect_run(cfg: dict, out_dir=None) -> RunInfo:
             pass
     return RunInfo(out_dir=out, prefix=prefix, axisym=axisym, snapshots=snaps)
 
-
-# ======================================================================
-#  2) CONFIG normalisieren  (2D nutzt "well", 3D "wells" usw.)
-# ======================================================================
 def well_config(cfg: dict) -> dict:
     w = cfg.get("well") or cfg.get("wells") or {}
     lay = cfg["layers"]
@@ -283,32 +172,31 @@ def well_config(cfg: dict) -> dict:
     off = w.get("screen_top_offset_m", 0.0) + w.get("screen_bottom_offset_m", 0.0)
     h_screen = max(1e-9, t_aq - off)
 
-    if "r_well_m" in w:                        # 2D radial
+    if "r_well_m" in w:
         r_eq = w["r_well_m"]
         V = math.pi * r_eq ** 2 * h_screen
-    else:                                      # 3D: Filterbox
+    else:
         dx, dy = w.get("screen_dx_m", 1.0), w.get("screen_dy_m", 1.0)
         V = dx * dy * h_screen
-        r_eq = math.sqrt(dx * dy / math.pi)    # flächengleicher Radius
+        r_eq = math.sqrt(dx * dy / math.pi)
 
     dom = cfg["domain"]
     R = dom.get("r_max_m") or 0.5 * min(dom.get("size_x_m", 300.0),
                                         dom.get("size_y_m", 300.0))
     return {
         "r_eq_m": r_eq, "h_screen_m": h_screen, "V_well_m3": V,
-        "A_screen_m2": 2.0 * math.pi * r_eq * h_screen,   # Filterzylinderfläche
+        "A_screen_m2": 2.0 * math.pi * r_eq * h_screen,
         "R_influence_m": R,
         "production_control": w.get("production_control", "fixed"),
         "max_rate_factor": w.get("max_rate_factor", 1.0),
     }
-
 
 def cycle_info(cfg: dict, curves: dict | None = None, rate_mult=None) -> dict:
     cyc = cfg["cycles"]
     op = cfg["operation"]
     T_amb = cfg["initial"]["T_K"]
     dT_ref = op["T_hot_K"] - T_amb
-    monthly = cyc.get("monthly_power_W")          # fehlt im Line-Modell ganz
+    monthly = cyc.get("monthly_power_W")
     cp_f = cfg["fluid"]["cp_J_kgK"]
 
     if curves:
@@ -330,10 +218,6 @@ def cycle_info(cfg: dict, curves: dict | None = None, rate_mult=None) -> dict:
         "n_cycles": cyc["n_cycles"], "rate_mult": rate_mult,
     }
 
-
-# ======================================================================
-#  3) Geometrie: Zellvolumen, Materialien, Masken
-# ======================================================================
 @dataclass
 class Geometry:
     vol: np.ndarray
@@ -350,16 +234,11 @@ class Geometry:
     n_cells: int
     h_typ_well_m: float
 
-
 def load_geometry(cfg: dict, run: RunInfo):
     import pyvista as pv
     dom = pv.read(run.out_dir / f"{run.prefix}_domain.vtu")
     mid = np.asarray(dom.cell_data["MaterialIDs"])
 
-    # MaterialID -> Material. Reihenfolge in allen Skripten gleich:
-    # aquifer=0, caprock_top=1, caprock_bottom=2, hot_well_vol=3.
-    # ates_3d_line.py hat zusätzlich cold_well_vol=4 -> Default nötig,
-    # sonst IndexError.
     mats = {0: cfg["materials"]["aquifer"],
             1: cfg["materials"]["caprock_top"],
             2: cfg["materials"]["caprock_bottom"],
@@ -377,17 +256,11 @@ def load_geometry(cfg: dict, run: RunInfo):
     sizes = dom.compute_cell_sizes(length=False, area=True, volume=True)
     cc = dom.cell_centers().points
     if run.axisym:
-        # OGS integriert mit 2*pi*r. pyvista liefert für Quads FLÄCHEN —
-        # das Ringvolumen ist V = 2*pi*r_schwerpunkt*A. Ohne diesen Faktor
-        # sind alle Energien um Größenordnungen falsch.
         vol = 2.0 * math.pi * cc[:, 0] * np.abs(sizes.cell_data["Area"])
         r_cell, z_cell = cc[:, 0], cc[:, 1]
-        x_rel = cc[:, 0]                 # axialsymmetrisch: keine Vorzugsrichtung
+        x_rel = cc[:, 0]
     else:
         vol = np.abs(sizes.cell_data["Volume"])
-        # Radius vom BRUNNEN aus, nicht vom Koordinatenursprung: der Brunnen
-        # darf ausserhalb der Mitte liegen (z. B. weit stromauf, damit die
-        # Fahne bei regionaler Stroemung Platz nach stromab hat).
         wsel = (mid == 3)
         if wsel.any():
             xw = float(np.average(cc[wsel, 0], weights=np.abs(sizes.cell_data["Volume"])[wsel]))
@@ -395,7 +268,7 @@ def load_geometry(cfg: dict, run: RunInfo):
         else:
             xw = yw = 0.0
         r_cell = np.hypot(cc[:, 0] - xw, cc[:, 1] - yw)
-        x_rel = cc[:, 0] - xw            # + = stromab bei direction_deg = 0
+        x_rel = cc[:, 0] - xw
         z_cell = cc[:, 2]
 
     keys = list(dom.cells_dict.keys())
@@ -406,7 +279,7 @@ def load_geometry(cfg: dict, run: RunInfo):
     z1 = z0 + cfg["layers"]["aquifer_thickness_m"]
     mask_well = np.isin(mid, (3,))
     mask_aq = np.isin(mid, (0, 3, 4)) & (z_cell >= z0 - 1e-6) & (z_cell <= z1 + 1e-6)
-    if not mask_well.any():                     # Notnagel: kein Brunnenmaterial
+    if not mask_well.any():
         mask_well = mask_aq & (r_cell < 2.0)
     w_well = vol[mask_well] / vol[mask_well].sum()
     h_typ = float(np.median(vol[mask_well] ** (1 / 3))) if not run.axisym else \
@@ -416,7 +289,6 @@ def load_geometry(cfg: dict, run: RunInfo):
                          w_well=w_well, x_rel=x_rel, z_aq=(z0, z1), n_points=dom.n_points,
                          n_cells=dom.n_cells, h_typ_well_m=h_typ)
 
-
 def _cell_vals(mesh, name, conn):
     if name not in mesh.point_data:
         return None
@@ -424,19 +296,12 @@ def _cell_vals(mesh, name, conn):
         return mesh.point_data[name][conn].mean(axis=1)
     return np.asarray(mesh.point_data_to_cell_data()[name])
 
-
-# ======================================================================
-#  4) Zeitreihen
-# ======================================================================
 def build_timeseries(cfg, run, geo, cyc):
     import pyvista as pv
     rho_f = cfg["fluid"]["rho_ref_kg_m3"]
     T_amb = cyc["T_amb_K"]
     z0, z1 = geo.z_aq
     z_mid = 0.5 * (z0 + z1)
-    # Punktsonde auf halber Aquiferhöhe — NUR zum Vergleich. Sie liest bei
-    # aktivem Auftrieb systematisch zu kalt, weil die heiße Fahne am
-    # Aquiferdach liegt.
     probe_pt = np.array([[0.8, z_mid, 0.0]]) if run.axisym else np.array([[0.8, 0.0, z_mid]])
     probe = pv.PolyData(probe_pt)
 
@@ -466,8 +331,6 @@ def build_timeseries(cfg, run, geo, cyc):
         out["E_cr"].append(float(dE[~geo.mask_aq].sum()) / 1e9)
         hot = geo.mask_aq & (T > T_amb + 1.0)
         out["r_front"].append(float(geo.r_cell[hot].max()) if hot.any() else 0.0)
-        # Bei regionaler Stroemung ist nicht der Radius interessant, sondern
-        # wie weit die Fahne stromab getragen wird.
         out["x_front_down"].append(float(geo.x_rel[hot].max()) if hot.any() else 0.0)
         out["x_front_up"].append(float(geo.x_rel[hot].min()) if hot.any() else 0.0)
         out["frac_hot"].append(float(geo.vol[geo.mask_aq & (T > T_amb + 40.0)].sum()
@@ -477,21 +340,12 @@ def build_timeseries(cfg, run, geo, cyc):
             out["dp_well"].append(np.nan)
         else:
             if p_ref is None:
-                # Referenz ist der UNGESTOERTE Zustand. Bei regionaler
-                # Stroemung gehoert deren linearer Anteil dazu, sonst misst
-                # man den Standortgradienten am Brunnenort als vermeintlichen
-                # Brunnendruck (bei x = -400 m und i = 0.015 sind das 59 kPa).
                 p_ref = p.copy()
                 _gw = cfg.get("regional_gw", {})
                 if _gw.get("enable", False) and not run.axisym:
                     _i = float(_gw.get("gradient_m_per_m", 0.0))
                     _a = math.radians(float(_gw.get("direction_deg", 0.0)))
                     _rg = cfg["fluid"]["rho_ref_kg_m3"] * G * _i
-                    # ABSOLUTE x-Koordinate: der Gradient wirkt vom
-                    # Koordinatenursprung, nicht vom Brunnen. Mit x_rel bliebe
-                    # genau der Versatz rho*g*i*x_Brunnen stehen - bei
-                    # x = -400 m sind das die 59 kPa, die dann faelschlich
-                    # als Brunnendruck erscheinen.
                     try:
                         _xw = float(cfg["wells"]["hot_well_xy"][0])
                     except Exception:
@@ -506,7 +360,6 @@ def build_timeseries(cfg, run, geo, cyc):
     ts = {k: np.asarray(v, dtype=float) for k, v in out.items()}
     ts["days"] = ts["t"] / DAY
 
-    # Massenstrom und Brunnenleistung auf dem Ausgabe-Zeitgitter
     if cyc["cycle_power"] is not None:
         tg, g = cyc["cycle_power"]
         ts["mdot"] = np.interp(ts["t"], tg, g) * cyc["mdot_nom_kg_s"]
@@ -529,21 +382,10 @@ def build_timeseries(cfg, run, geo, cyc):
     ts["E_in"] = cumtrap(np.clip(ts["P"], 0, None))
     ts["E_out"] = cumtrap(np.clip(-ts["P"], 0, None))
 
-    # Bei regionaler Stroemung ist der Brunnendruck im ERSTEN Schnappschuss
-    # nicht definiert: dort steht noch die rein hydrostatische
-    # Anfangsbedingung, waehrend die Referenz den Regionalgradienten bereits
-    # enthaelt. Die Differenz waere der Gradient selbst (rund -100 kPa bei
-    # 700 m Abstand vom Koordinatenursprung), nicht der Brunnen. Als NaN
-    # markieren, damit weder das Pruefblatt noch die CSV ihn als Messwert
-    # ausgeben. Ohne Stroemung ist der Wert dort exakt 0 und bleibt stehen.
     if len(ts["dp_well"]) and cfg.get("regional_gw", {}).get("enable", False)             and not run.axisym:
         ts["dp_well"][0] = np.nan
     return ts
 
-
-# ======================================================================
-#  5) Kennzahlen je Betriebsjahr
-# ======================================================================
 def energy_metrics(ts, cyc):
     rows = []
     E_tot = ts["E_aq"] + ts["E_cr"]
@@ -551,7 +393,7 @@ def energy_metrics(ts, cyc):
     e_dem = (sum(-p for p in monthly if p < 0) * MONTH / 1e9) if monthly else None
     for y in range(int(cyc["n_cycles"])):
         a, b = y * YEAR, (y + 1) * YEAR
-        if ts["t"][-1] < b - 0.02 * YEAR:        # nur volle Jahre bilanzieren
+        if ts["t"][-1] < b - 0.02 * YEAR:
             break
         e_in = np.interp(b, ts["t"], ts["E_in"]) - np.interp(a, ts["t"], ts["E_in"])
         e_out = np.interp(b, ts["t"], ts["E_out"]) - np.interp(a, ts["t"], ts["E_out"])
@@ -574,7 +416,6 @@ def energy_metrics(ts, cyc):
             "r_front_m": float(ts["r_front"][sel].max()) if sel.any() else np.nan,
         })
     return rows, e_dem
-
 
 def monthly_balance(ts, cyc, year_idx):
     monthly = cyc["monthly_power_W"]
@@ -602,15 +443,8 @@ def monthly_balance(ts, cyc, year_idx):
         })
     return rows
 
-
-
 def log_stats(run):
-    """Liest die OGS-Konsolenausgabe aus dem Ergebnisverzeichnis.
-
-    Ein Lauf kann mitten in der Rechnung abbrechen, ohne dass man es den
-    vorhandenen VTU-Dateien ansieht - man wertet dann stillschweigend einen
-    halben Lauf aus. Deshalb wird der Log mitgelesen.
-    """
+    """Liest die OGS-Konsolenausgabe aus dem Ergebnisverzeichnis."""
     out = {"accepted": None, "rejected": None, "aborted": False, "errors": 0}
     for name in ("driver.log", "run.log", "ogs.log"):
         p = run.out_dir / name
@@ -629,17 +463,8 @@ def log_stats(run):
         break
     return out
 
-
-# ======================================================================
-#  6) Plausibilitätsprüfung — Ampel
-# ======================================================================
 def checks(cfg, run, geo, ts, cyc, rows):
-    """-> Liste von (Name, Wert, Einheit, Status, Diagnose, ok_band, fehler_marke)
-
-    Alle Schwellen aus CONFIG abgeleitet, damit dieselbe Tabelle für jeden
-    Standort gilt. Die Fehler-Marken sind die gemessenen Fingerabdrücke der
-    beiden klassischen Modellfehler.
-    """
+    """-> Liste von (Name, Wert, Einheit, Status, Diagnose, ok_band, fehler_marke)"""
     T_amb = cyc["T_amb_K"]
     T_inj = cfg["operation"]["T_hot_K"]
     out = []
@@ -648,11 +473,6 @@ def checks(cfg, run, geo, ts, cyc, rows):
         out.append(dict(name=name, val=val, unit=unit, band=band,
                         status=status, diag=diag, marke=marke))
 
-    # --- A) Fingerabdruck fehlender rho_f-Division ---------------------
-    # Nicht die absolute Geschwindigkeit pruefen (die haengt am Brunnenradius),
-    # sondern das Verhaeltnis zur analytisch erwarteten Geschwindigkeit an der
-    # Filterflaeche: v_soll = (mdot/rho_f)/A_Filter. Fehlt die rho_f-Division,
-    # ist das Verhaeltnis ~1000 statt ~1 - unabhaengig von der Geometrie.
     _wc = well_config(cfg)
     v_soll = cyc["mdot_nom_kg_s"] / (cfg["fluid"]["rho_ref_kg_m3"] * _wc["A_screen_m2"])
     v = np.nanmax(ts["v_max"]) if len(ts["v_max"]) else np.nan
@@ -665,10 +485,6 @@ def checks(cfg, run, geo, ts, cyc, rows):
         f"{ratio:.0f}. Bei ~1000 ist der Quellterm der Druckgleichung nicht "
         "durch rho_f geteilt (muss 1/s sein, nicht kg/(m³·s)).", 1000.0)
 
-    # Auch hier nicht absolut pruefen: 75 kPa sind bei k = 1e-11 richtig und bei
-    # k = 6e-11 zu viel. Verglichen wird mit der Thiem-Vorhersage fuer dieselbe
-    # Rate - stimmen Handformel und Feld nicht ueberein, ist der Quellterm falsch
-    # skaliert.
     K_h = (cfg["materials"]["aquifer"]["permeability_m2"]
            * cfg["fluid"]["rho_ref_kg_m3"] * G / cfg["fluid"]["viscosity_Pa_s"])
     b_aq = cfg["layers"]["aquifer_thickness_m"]
@@ -676,10 +492,6 @@ def checks(cfg, run, geo, ts, cyc, rows):
              / (2 * math.pi * K_h * b_aq))
     dp_soll = (cyc["mdot_nom_kg_s"] / cfg["fluid"]["rho_ref_kg_m3"]
                * thiem * cfg["fluid"]["rho_ref_kg_m3"] * G)
-    # # Den ersten Schnappschuss auslassen: bei t = 0 steht die Anfangsbedingung
-    # (rein hydrostatisch), der regionale Gradient baut sich erst in den ersten
-    # Sekunden auf. Die analytische Referenz enthaelt ihn aber schon - t = 0
-    # lieferte sonst den Gradienten selbst als vermeintlichen Brunnendruck.
     _dpw = ts["dp_well"][1:] if len(ts["dp_well"]) > 1 else ts["dp_well"]
     dp = np.nanmax(np.abs(_dpw)) if len(_dpw) else np.nan
     q = dp / max(dp_soll, 1e-30)
@@ -697,17 +509,9 @@ def checks(cfg, run, geo, ts, cyc, rows):
         "Fast das ganze Gebiet ist heiß — es wird viel zu viel Energie "
         "eingetragen (rho_f) oder die Domäne ist zu klein.", 93.0)
 
-    # --- B) Fingerabdruck der Dauerklemme -----------------------------
     over = (np.nanmax(ts["T_max"]) - T_inj) if len(ts["T_max"]) else np.nan
-    # Ohne Stroemung darf hier nichts stehen: der Fall ohne Durchstrom trifft
-    # 6e-12 K, also Maschinengenauigkeit. MIT regionaler Stroemung sitzt am
-    # Filter ein auf T_inj geklemmter Koerper mitten im Durchstrom, und die
-    # Galerkin-Loesung ueberschwingt dort um einen Bruchteil des
-    # Temperaturhubs. Gemessen: 1.1 K bei 50 K Hub, energetisch 0.0004 % des
-    # Jahreseintrags - ansehen ja, aber es macht die Zahlen nicht wertlos.
-    # Die Grenze skaliert deshalb mit dem Hub statt pauschal bei 1 K zu stehen.
     _flow = bool(cfg.get("regional_gw", {}).get("enable", False)) and not run.axisym
-    _lift = T_inj - T_amb          # beide in Kelvin -> Hub in K
+    _lift = T_inj - T_amb
     _warn = max(1.0, 0.05 * _lift) if _flow else 1.0
     st = "OK" if over <= 0.05 else ("WARNUNG" if over <= _warn else "FEHLER")
     add("T_max - T_inj", over, "K", (-50.0, 0.05), st,
@@ -730,7 +534,6 @@ def checks(cfg, run, geo, ts, cyc, rows):
         "läuft auch in der Förderphase. `DirichletWithinTimeInterval` nur "
         "über die Beladungsintervalle setzen.", 0.0)
 
-    # --- Lauf ueberhaupt sauber durchgelaufen? ------------------------
     ls = log_stats(run)
     if ls["accepted"] is not None:
         rej = ls["rejected"]
@@ -748,7 +551,6 @@ def checks(cfg, run, geo, ts, cyc, rows):
              "Lauf ist durch, aber die Nichtlinearitaet ist grenzwertig. "
              "`solver.nonlinear_iter` erhoehen."))
 
-    # --- C) Modellaufbau ----------------------------------------------
     und = (T_amb - np.nanmin(ts["T_min"])) if len(ts["T_min"]) else np.nan
     st = "OK" if und <= 1.0 else ("WARNUNG" if und <= 8.0 else "FEHLER")
     add("T_min unter T_amb", und, "K", (0.0, 1.0), st,
@@ -766,11 +568,6 @@ def checks(cfg, run, geo, ts, cyc, rows):
     front = 2.0 * math.sqrt(a_cr * t_run)
     d_cr = min(cfg["layers"]["caprock_top_thickness_m"],
                cfg["layers"]["caprock_bottom_thickness_m"])
-    # Faktor 1.5 statt 1.0: an einem 30-Jahres-Lauf nachgemessen reichte die
-    # 0.1-K-Front 71.6 m ins Deckgestein, waehrend 2*sqrt(a*t) nur 54 m ergab.
-    # Die Formel unterschaetzt, weil der Aquifer 30 Jahre lang eine warme
-    # Quelle ist und nicht ein einmaliger Puls - und weil der Auftrieb nach
-    # OBEN zusaetzlich Waerme an die Grenzflaeche traegt.
     st = ("OK" if d_cr >= 1.5 * front
           else ("WARNUNG" if d_cr >= front else "FEHLER"))
     add("Deckgestein / Leitfront 2*sqrt(a*t)", d_cr / max(front, 1e-9), "-",
@@ -782,9 +579,6 @@ def checks(cfg, run, geo, ts, cyc, rows):
 
     gw_on = bool(cfg.get("regional_gw", {}).get("enable", False)) and not run.axisym
     if gw_on:
-        # Mit Stroemung SOLL die Fahne das Gebiet verlassen - das ist das
-        # Ergebnis, nicht der Fehler. Geprueft wird nur, ob stromab genug
-        # Platz war, um die Drift ueberhaupt zu sehen.
         _dn = float(np.nanmax(ts["x_front_down"])) if len(ts.get("x_front_down", [])) else np.nan
         try:
             _xw = float(cfg["wells"]["hot_well_xy"][0])
@@ -808,9 +602,6 @@ def checks(cfg, run, geo, ts, cyc, rows):
             "— Domäne vergrößern (`domain.r_max_m` bzw. `size_x_m/size_y_m`).")
 
     if len(rows) >= 4:
-        # Nicht Jahr N gegen N-1 vergleichen: bei unsymmetrischen Lastprofilen
-        # pendelt eta von Jahr zu Jahr um mehrere Prozentpunkte. Der Trend
-        # steckt im Mittel ueber je zwei Jahre.
         e = [r["eta_pct"] for r in rows]
         d = (e[-1] + e[-2]) / 2 - (e[-3] + e[-4]) / 2
         st = "OK" if abs(d) <= 2.0 else "WARNUNG"
@@ -832,13 +623,6 @@ def checks(cfg, run, geo, ts, cyc, rows):
         r = rows[-1]
         rest = r["E_ein_GJ"] - r["E_aus_GJ"] - (r["E_ein_feld_GJ"] - r["E_aus_GJ"])
         rel = 100 * (r["E_ein_feld_GJ"] - r["E_ein_GJ"]) / max(r["E_ein_GJ"], 1e-9)
-        # Bei regionaler Stroemung ist der Mehreintrag PHYSIK, kein Befund:
-        # der Grundwasserstrom spuelt staendig durch den auf T_inj geklemmten
-        # Filterkoerper und wird dabei aufgeheizt - der Brunnen wirkt als
-        # Waermetauscher am Strom. Das als FEHLER zu melden bringt Studenten
-        # bei, rote Punkte zu ueberlesen; genau das hat diese Uebung schon
-        # einmal wochenlang blockiert. Im Fall OHNE Stroemung bleibt der
-        # Befund scharf - dort zeigt er ein zu grosses Filtervolumen an.
         if gw_on:
             st, lim = "OK", (0.0, 400.0)
             txt = ("Waermetauschereffekt am Grundwasserstrom - so erwartet. "
@@ -856,10 +640,6 @@ def checks(cfg, run, geo, ts, cyc, rows):
         add("Dirichlet-Mehreintrag", rel, "%", lim, st, txt)
     return out
 
-
-# ======================================================================
-#  7) Abbildungen
-# ======================================================================
 def _style(ax, title=None, sub=None, xl=None, yl=None):
     ax.grid(alpha=.25, lw=.7, color=C_RULE)
     ax.set_axisbelow(True)
@@ -879,7 +659,6 @@ def _style(ax, title=None, sub=None, xl=None, yl=None):
     if yl:
         ax.set_ylabel(yl, color=C_INK2, fontsize=10)
 
-
 def fig_pruefblatt(chks, fig_dir, plt):
     """Ampel-Panel: liegt jede Kennzahl im plausiblen Band?"""
     ch = [c for c in chks if np.isfinite(c["val"])]
@@ -892,8 +671,6 @@ def fig_pruefblatt(chks, fig_dir, plt):
         y = i
         lo, hi = c["band"]
         v = c["val"]
-        # Alle Größen auf ihr eigenes OK-Band normieren: 0 = untere Grenze,
-        # 1 = obere Grenze. So passen Kelvin, kPa und m/d in EIN Bild.
         span = max(hi - lo, 1e-12)
         xn = (v - lo) / span
         ax.axhspan(y - .34, y + .34, xmin=0, xmax=1, color="#f4f6f7", lw=0)
@@ -938,7 +715,6 @@ def fig_pruefblatt(chks, fig_dir, plt):
     fig.savefig(p, dpi=140); plt.close(fig)
     return p
 
-
 def fig_brunnentemperatur(cfg, ts, cyc, fig_dir, plt):
     T_amb, T_inj = cyc["T_amb_K"] - 273.15, cfg["operation"]["T_hot_K"] - 273.15
     yr = ts["days"] / 365.25
@@ -978,7 +754,6 @@ def fig_brunnentemperatur(cfg, ts, cyc, fig_dir, plt):
     fig.savefig(p, dpi=140); plt.close(fig)
     return p
 
-
 def fig_deckungsgrad(rows, cyc, fig_dir, plt):
     monthly = cyc["monthly_power_W"]
     if not rows:
@@ -991,9 +766,6 @@ def fig_deckungsgrad(rows, cyc, fig_dir, plt):
         aus = sum(-p for p in monthly if p < 0)
         cap = 100 * ein / aus if aus > 0 else None
     if cap:
-        # Nur eine Linie, keine Flaeche: die Deckelung gilt fuer den
-        # DECKUNGSGRAD. eta darf darueber liegen - das ist kein Widerspruch,
-        # sondern genau der Punkt (guter Speicher, zu kleine Solaranlage).
         ax.axhline(cap, color=C_CRIT, lw=1.6)
         ax.annotate(f"Obergrenze des Deckungsgrads: {cap:.1f} %\n"
                     "(mehr Wärme als eingespeichert kann nicht heraus)",
@@ -1028,7 +800,6 @@ def fig_deckungsgrad(rows, cyc, fig_dir, plt):
     p = fig_dir / "2_deckungsgrad.png"
     fig.savefig(p, dpi=140); plt.close(fig)
     return p
-
 
 def fig_monatsbilanz(mon, cyc, fig_dir, plt):
     if not mon:
@@ -1072,15 +843,8 @@ def fig_monatsbilanz(mon, cyc, fig_dir, plt):
     fig.savefig(p, dpi=140); plt.close(fig)
     return p
 
-
 def fig_machbarkeit(cfg, ts, cyc, mon, fig_dir, plt):
-    """Machbarkeitskette: T_inj -> mdot -> Eintrittsgeschw. -> Absenkung.
-
-    Der Sinn ist die Reihenfolge: T_inj ist eine ANNAHME, daraus folgt der
-    Massenstrom, daraus die Beanspruchung des Filters und der Druck. Wird eine
-    der Grenzen gerissen, ist die Anlage so nicht baubar — und ein Druck um
-    Faktor 1000 zu hoch ist der Fingerabdruck des fehlenden rho_f.
-    """
+    """Machbarkeitskette: T_inj -> mdot -> Eintrittsgeschw. -> Absenkung."""
     wc = well_config(cfg)
     monthly = cyc["monthly_power_W"]
     if not monthly:
@@ -1092,7 +856,7 @@ def fig_machbarkeit(cfg, ts, cyc, mon, fig_dir, plt):
     b_aq = cfg["layers"]["aquifer_thickness_m"]
     thiem = math.log(max(wc["R_influence_m"] / wc["r_eq_m"], 1.1)) / (2 * math.pi * K * b_aq)
     cp, dT = cyc["cp_f"], cyc["dT_ref_K"]
-    V_LIM = 0.03                     # Richtwert Filtereintrittsgeschwindigkeit
+    V_LIM = 0.03
 
     inj = [(MONTHS[i], p / (cp * dT)) for i, p in enumerate(monthly) if p > 0]
     need = []
@@ -1117,13 +881,12 @@ def fig_machbarkeit(cfg, ts, cyc, mon, fig_dir, plt):
 
     fig, axes = plt.subplots(1, 3, figsize=(14.2, 4.9))
 
-    # (1) Massenstrom
     ax = axes[0]
     ax.bar(x, val, .64, color=colr)
     lo, hi = 50 * rho_f / 3600, 250 * rho_f / 3600
     ax.set_ylim(0, val.max() * 1.6)
     for _y, _t in ((lo, "50 m³/h"), (hi, "250 m³/h")):
-        if _y < val.max() * 1.5:          # nur zeichnen, wenn im Bild
+        if _y < val.max() * 1.5:
             ax.axhline(_y, color=C_AQUA, lw=1.1, ls="--")
             ax.text(len(val) - .5, _y, _t + " ", ha="right", va="bottom",
                     fontsize=8.5, color=C_AQUA)
@@ -1135,7 +898,6 @@ def fig_machbarkeit(cfg, ts, cyc, mon, fig_dir, plt):
                  fontweight="bold", color=C_INK, pad=10)
     ax.set_ylabel("ṁ [kg/s]", color=C_INK2, fontsize=10)
 
-    # (2) Filtereintrittsgeschwindigkeit, in % des Richtwerts
     ax = axes[1]
     ve = val / (rho_f * wc["A_screen_m2"])
     worst = 100 * ve.max() / V_LIM
@@ -1152,7 +914,6 @@ def fig_machbarkeit(cfg, ts, cyc, mon, fig_dir, plt):
                  fontweight="bold", color=C_INK, pad=10)
     ax.set_ylabel("in % des Richtwerts", color=C_INK2, fontsize=10)
 
-    # (3) Absenkung / Aufhoehung
     ax = axes[2]
     dh = val / rho_f * thiem
     ax.bar(x, dh, .64, color=colr)
@@ -1195,7 +956,6 @@ def fig_machbarkeit(cfg, ts, cyc, mon, fig_dir, plt):
     plt.close(fig)
     return p
 
-
 def fig_energiebilanz(ts, rows, cyc, fig_dir, plt):
     yr = ts["days"] / 365.25
     fig, ax = plt.subplots(figsize=(11.5, 4.4))
@@ -1226,15 +986,8 @@ def fig_energiebilanz(ts, rows, cyc, fig_dir, plt):
     fig.savefig(p, dpi=140); plt.close(fig)
     return p
 
-
 def _sample_plane(mesh, xs, ys, const, plane):
-    """Feld auf ein regelmaessiges Raster in einer Ebene abtasten.
-
-    Bewusst per Abtastung statt per 3D-Rendering: braucht keinen OpenGL-Kontext,
-    laeuft also auch ohne Grafikkarte durch, und die Farbskala laesst sich fest
-    vorgeben. plane: "xy" (horizontal, z = const), "xz" (vertikal laengs,
-    y = const) oder "rz" (2D-Radialmodell, z = 0).
-    """
+    """Feld auf ein regelmaessiges Raster in einer Ebene abtasten."""
     import pyvista as pv
     A, B = np.meshgrid(xs, ys)
     C = np.full_like(A, float(const))
@@ -1242,30 +995,20 @@ def _sample_plane(mesh, xs, ys, const, plane):
         grid = pv.StructuredGrid(A, B, C)
     elif plane == "xz":
         grid = pv.StructuredGrid(A, C, B)
-    else:                                    # rz: 2D-Netz liegt in der xy-Ebene
+    else:
         grid = pv.StructuredGrid(A, B, C)
     res = grid.sample(mesh)
-    # pyvista setzt dimensions = A.shape und legt die Punkte in FORTRAN-
-    # Reihenfolge ab. Ein reshape in C-Ordnung transponiert das Feld still
-    # und liefert diagonale Streifen statt eines Temperaturfeldes.
     T = np.asarray(res["T"]).reshape(A.shape, order="F") - 273.15
     valid = np.asarray(res["vtkValidPointMask"]).reshape(A.shape, order="F").astype(bool)
     T[~valid] = np.nan
     return A, B, T
 
-
 def _pick_times(ts, cyc, n=6, whole=False):
-    """n Zeitpunkte aus dem LETZTEN vollen Betriebsjahr, gleichmaessig verteilt.
-
-    Nicht ueber den ganzen Lauf verteilen: das erste Jahr ist nie
-    repraesentativ, und die Aussage ist das saisonale Atmen.
-    """
+    """n Zeitpunkte aus dem LETZTEN vollen Betriebsjahr, gleichmaessig verteilt."""
     t = ts["t"]
     if len(t) < 2:
         return []
     if whole:
-        # Bei regionaler Stroemung ist der ganze Lauf interessant: die Fahne
-        # wandert weg und kommt nicht wieder. Ein einzelnes Jahr zeigt das nicht.
         a, b = 0.0, t[-1]
     else:
         yr_last = max(0.0, np.floor(t[-1] / YEAR) - 1) if t[-1] >= 2 * YEAR else 0.0
@@ -1274,14 +1017,8 @@ def _pick_times(ts, cyc, n=6, whole=False):
     want = np.linspace(a, b, n + 1)[1:]
     return [int(np.argmin(np.abs(t - w))) for w in want]
 
-
 def fig_feldschnitte(cfg, run, geo, ts, cyc, fig_dir, plt):
-    """Temperaturfeld zu mehreren Zeitpunkten - fixe Farbskala.
-
-    Die feste Skala T_amb..T_inj ueber alle Teilbilder ist der Punkt: mit der
-    ueblichen Autoskalierung sieht ein Lauf, in dem der halbe Aquifer kocht,
-    genauso aus wie ein gesunder.
-    """
+    """Temperaturfeld zu mehreren Zeitpunkten - fixe Farbskala."""
     import pyvista as pv
     flow = bool(cfg.get("regional_gw", {}).get("enable", False))
     idx = _pick_times(ts, cyc, whole=flow)
@@ -1302,12 +1039,8 @@ def fig_feldschnitte(cfg, run, geo, ts, cyc, fig_dir, plt):
         ax.tick_params(labelsize=8, colors=C_INK2)
         return cf
 
-    # ---------- 2D axialsymmetrisch: (r, z), gespiegelt ----------------
     if run.axisym:
         r_max = max(30.0, 1.25 * float(np.nanmax(ts["r_front"])))
-        # Erst auf der HALBEBENE abtasten (r monoton!), dann das Ergebnis
-        # spiegeln. Ein nicht monotones Koordinatenfeld faltet das
-        # StructuredGrid in sich selbst und liefert Streifenmuster.
         rs = np.linspace(0.0, r_max, 200)
         zs = np.linspace(z0 - 45, z1 + 45, 190)
         xs = np.concatenate([-rs[::-1], rs])
@@ -1337,9 +1070,7 @@ def fig_feldschnitte(cfg, run, geo, ts, cyc, fig_dir, plt):
         out.append(p)
         return out
 
-    # ---------- 3D: Draufsicht (Drift) + Laengsschnitt ------------------
-    xw = float(np.average(geo.r_cell[geo.mask_well] * 0 + 0))   # Platzhalter
-    # Brunnenlage aus der Zellmaske
+    xw = float(np.average(geo.r_cell[geo.mask_well] * 0 + 0))
     dom = pv.read(run.out_dir / f"{run.prefix}_domain.vtu")
     cc = dom.cell_centers().points
     mid = np.asarray(dom.cell_data["MaterialIDs"])
@@ -1386,21 +1117,8 @@ def fig_feldschnitte(cfg, run, geo, ts, cyc, fig_dir, plt):
         out.append(p)
     return out
 
-
-# ======================================================================
-#  8) Hauptfunktion
-# ======================================================================
-# ======================================================================
-#  CSV-Export
-# ======================================================================
 def schreibe_csv(cfg, run, geo, ts, cyc, mon, rows, chks, ziel):
-    """Alle Zahlen des Laufs in EINEN Ordner, mit sprechenden Namen.
-
-    Temperaturen werden hier von Kelvin nach Grad Celsius umgerechnet:
-    intern rechnet alles in Kelvin, aber niemand liest eine
-    Brunnentemperatur in Kelvin ab. Einheiten stehen im Spaltennamen,
-    damit man beim Weiterrechnen nicht raten muss.
-    """
+    """Alle Zahlen des Laufs in EINEN Ordner, mit sprechenden Namen."""
     ziel = Path(ziel)
     ziel.mkdir(parents=True, exist_ok=True)
     K = 273.15
@@ -1415,9 +1133,6 @@ def schreibe_csv(cfg, run, geo, ts, cyc, mon, rows, chks, ziel):
             w.writerows(zeilen)
         geschrieben.append(name)
 
-    # --- 1) Zeitreihe je Ausgabeschritt -------------------------------
-    # Das ist die Datei fuer alles Zeitabhaengige: Brunnentemperatur,
-    # Massenstrom, Leistung, Druck, Energien, Frontlagen.
     def _sp(name, key, f=None):
         a = ts.get(key)
         if a is None or not len(a):
@@ -1453,11 +1168,10 @@ def schreibe_csv(cfg, run, geo, ts, cyc, mon, rows, chks, ziel):
             zeile = []
             for _, werte in spalten:
                 v = werte[i]
-                zeile.append("" if v != v else f"{v:.6g}")   # v != v -> NaN
+                zeile.append("" if v != v else f"{v:.6g}")
             zeilen.append(zeile)
         _tab("zeitreihe.csv", [k for k, _ in spalten], zeilen)
 
-    # --- 2) Monatsbilanz des letzten vollen Betriebsjahres ------------
     _tab("monatsbilanz.csv",
          ["monat", "betriebsart", "P_soll_kW", "T_brunnen_C",
           "E_gefordert_GJ", "E_geliefert_GJ", "deckung_pct"],
@@ -1466,7 +1180,6 @@ def schreibe_csv(cfg, run, geo, ts, cyc, mon, rows, chks, ziel):
            f"{m['E_gefordert_GJ']:.4f}", f"{m['E_geliefert_GJ']:.4f}",
            f"{m['deckung_pct']:.2f}"] for m in (mon or [])])
 
-    # --- 3) Kennzahlen je Betriebsjahr --------------------------------
     if rows:
         with open(ziel / "kennzahlen_jahr.csv", "w", newline="",
                   encoding="utf-8") as fh:
@@ -1476,16 +1189,12 @@ def schreibe_csv(cfg, run, geo, ts, cyc, mon, rows, chks, ziel):
                           for k, v in r.items()} for r in rows])
         geschrieben.append("kennzahlen_jahr.csv")
 
-    # --- 4) Pruefblatt -------------------------------------------------
     _tab("pruefblatt.csv",
          ["pruefgroesse", "wert", "einheit", "ok_von", "ok_bis",
           "status", "diagnose"],
          [[c["name"], f"{c['val']:.4g}", c["unit"], c["band"][0],
            c["band"][1], c["status"], c["diag"]] for c in chks])
 
-    # --- 5) Was tatsaechlich gerechnet wurde ---------------------------
-    # Ohne diese Datei laesst sich spaeter nicht mehr sagen, mit welchen
-    # Werten ein Ergebnisordner entstanden ist.
     def _flach(d, pre=""):
         o = []
         for k, v in d.items():
@@ -1500,11 +1209,7 @@ def schreibe_csv(cfg, run, geo, ts, cyc, mon, rows, chks, ziel):
     print(f"  [csv] {len(geschrieben)} Dateien -> {ziel}")
     return geschrieben
 
-
 def report(cfg, out_dir=None, curves=None, rate_mult=None, report_dir=None):
-    # Windows-Konsolen laufen oft auf cp1252 und wirfen bei Zeichen wie "−"
-    # (U+2212) oder "ρ" einen UnicodeEncodeError - der Bericht wuerde daran
-    # sterben. Nur die FEHLERBEHANDLUNG wird umgestellt, nicht die Codierung.
     try:
         import sys as _s
         _s.stdout.reconfigure(errors="replace")
@@ -1535,7 +1240,6 @@ def report(cfg, out_dir=None, curves=None, rate_mult=None, report_dir=None):
 
     schreibe_csv(cfg, run, geo, ts, cyc, mon, rows, chks, rep / "csv")
 
-    # --- Konsole -----------------------------------------------------
     print("\n  " + "=" * 74)
     print("  PRUEFBLATT" + (f"   ({run.prefix}, {ts['days'][-1]/365.25:.2f} Jahre "
                             f"gerechnet)" if len(ts["days"]) else ""))
@@ -1557,7 +1261,6 @@ def report(cfg, out_dir=None, curves=None, rate_mult=None, report_dir=None):
             print(line + f"{r['T_foerder_C']:>11.2f} {r['E_deckgestein_GJ']:>14.0f}")
     print("  " + "=" * 74)
 
-    # --- Abbildungen -------------------------------------------------
     figs = []
     try:
         import matplotlib
@@ -1584,12 +1287,11 @@ def report(cfg, out_dir=None, curves=None, rate_mult=None, report_dir=None):
                 figs.extend([q for q in p if q])
             elif p:
                 figs.append(p)
-        except Exception as e:                       # eine Abbildung darf scheitern
+        except Exception as e:
             print(f"  [report] {fn.__name__}: {type(e).__name__}: {e}")
     print(f"  [report] {len(figs)} Abbildungen -> {fig_dir}")
     return {"status": "ok", "rows": rows, "checks": chks, "figures": figs,
             "timeseries": ts}
-
 
 def auto_report(cfg, out_dir=None, curves=None, rate_mult=None, report_dir=None):
     """Wie report(), aber schluckt jeden Fehler: kein Lauf scheitert am Bericht."""
@@ -1601,11 +1303,6 @@ def auto_report(cfg, out_dir=None, curves=None, rate_mult=None, report_dir=None)
         print(f"  [report] uebersprungen ({type(e).__name__}: {e})")
         return None
 
-# ####################################################################
-#  Der Pruefbericht steht oben in dieser Datei. Der Rechenkern importiert
-#  ihn als Modul "ates_report" - also melden wir eines an, statt den Kern
-#  anzufassen.
-# ####################################################################
 import sys as _sys
 import types as _types
 _mod = _types.ModuleType("ates_report")
@@ -1643,66 +1340,41 @@ import gmsh
 import re
 import numpy as np
 
-# ======================================================================
-#  CONFIG  --  hier alles anpassen
-# ======================================================================
 CONFIG: dict = {
-    # An MOOSE-ATES + das validierte 2D-Modell angelehnt, aber echtes 3D mit
-    # regionaler Grundwasserströmung (die Fahne driftet stromab).
     "domain": {
-        "size_x_m":   400.0,    # Strömungsrichtung (Platz für Fahnendrift)
-        "size_y_m":   250.0,    # quer
-        "z_base_m":     0.0,    # untere Modellgrenze (z-Koordinate)
+        "size_x_m":   400.0,
+        "size_y_m":   250.0,
+        "z_base_m":     0.0,
     },
     "layers": {
-        # Deckgestein dick genug, dass die Wärmeleitfront den auf T_amb fixierten
-        # Rand nicht erreicht (bei 2 Jahren ~18 m -> 40 m je Seite reicht klar).
         "caprock_bottom_thickness_m": 40.0,
         "aquifer_thickness_m":        20.0,
         "caprock_top_thickness_m":    40.0,
     },
     "wells": {
-        # Single-Well-Anlage. Brunnen als kleine Filtersäule über die volle
-        # Aquiferhöhe (Offsets 0). Der Lateralrand des Aquifers ist Druck-Outlet
-        # (bzw. GW-Gradient), damit injiziertes Wasser entweichen kann.
-        "hot_well_xy":   ( 0.0,  0.0),     # (x, y) Lage des Brunnens
-        "screen_bottom_offset_m": 0.0,     # Filter über volle Aquiferhöhe
+        "hot_well_xy":   ( 0.0,  0.0),
+        "screen_bottom_offset_m": 0.0,
         "screen_top_offset_m":    0.0,
-        "screen_dx_m":             1.0,    # x-Ausdehnung des Filtervolumens
-        "screen_dy_m":             1.0,    # y-Ausdehnung des Filtervolumens
-        "screen_permeability_m2":  1.0e-11,# = Aquifer (Filter voll durchlässig)
-        # Förderregelung wie im 2D: "fixed" (feste Rate) oder "demand"
-        # (bedarfsgeführt, iterativ). Im 3D ist ein Lauf teuer (~1.5 h) →
-        # "fixed" als Default; "demand" macht n Wiederholungsläufe.
+        "screen_dx_m":             1.0,
+        "screen_dy_m":             1.0,
+        "screen_permeability_m2":  1.0e-11,
         "production_control":      "fixed",
         "max_rate_factor":         6.0,
         "demand_iterations":       3,
     },
-    # ------------------------------------------------------------------
-    # REGIONALE GRUNDWASSERSTRÖMUNG  (das 3D-Kernmerkmal)
-    # ------------------------------------------------------------------
-    # Ein linearer Druckgradient auf der Lateral-Aquifer-Fläche prägt eine
-    # großräumige Hintergrundströmung auf → die thermische Fahne driftet in
-    # Strömungsrichtung. Kombiniert mit dem hydrostatischen Vertikaldruck.
-    # ------------------------------------------------------------------
     "regional_gw": {
         "enable":            True,
-        "gradient_m_per_m":  2.0e-3,       # hydraulischer Gradient (dimensionslos)
-        "direction_deg":     0.0,          # 0° = +x, 90° = +y, ...
+        "gradient_m_per_m":  2.0e-3,
+        "direction_deg":     0.0,
     },
-    # Strukturiertes/feineres Netz: fein am Brunnen und stromab (Driftbahn),
-    # gröber im Fernfeld.  (Tetraeder mit Distance-Verfeinerung, konforme
-    # Schichtgrenzen durch OCC-Fragmentierung.)
     "mesh": {
         "size_in_well_m":       0.5,
-        "size_near_wells_m":    1.7,       # Fahnen-/Driftregion fein
-        "size_far_m":          20.0,       # Fernfeld grob (plumefern)
-        "well_size_radius_m":  22.0,       # fein bis hierher (deckt Fahne + Drift)
-        "well_size_radius_far_m": 65.0,    # ab dem: grob
+        "size_near_wells_m":    1.7,
+        "size_far_m":          20.0,
+        "well_size_radius_m":  22.0,
+        "well_size_radius_far_m": 65.0,
     },
     "materials": {
-        # MOOSE-Werte: Aquifer & Deckgestein gleiche thermische Eigenschaften,
-        # nur Permeabilität unterscheidet sich (Deckgestein ~strömungsdicht).
         "aquifer": {
             "permeability_m2": 1.0e-11,
             "porosity":        0.25,
@@ -1726,10 +1398,9 @@ CONFIG: dict = {
         },
     },
     "fluid": {
-        # Auftrieb wie im 2D: T-abhängige Dichte & Viskosität.
         "rho_ref_kg_m3":  1000.0,
         "T_ref_K":         283.15,
-        "beta_1_per_K":   -4.0e-4,     # thermische Ausdehnung (heißes Wasser leichter)
+        "beta_1_per_K":   -4.0e-4,
         "viscosity_Pa_s":       1.3e-3,
         "visc_slope_1_per_K":  -1.28e-2,
         "cp_J_kgK":        4180.0,
@@ -1740,66 +1411,34 @@ CONFIG: dict = {
         "alpha_T_m": 0.1,
     },
     "initial": {
-        "T_K":  283.15,      # 10 °C Umgebung (= fluid.T_ref)
-        "p_Pa": 1.0e5,       # Referenzdruck Oberkante (hydrostatisch nach unten)
+        "T_K":  283.15,
+        "p_Pa": 1.0e5,
     },
     "operation": {
-        # T_hot_K = Injektionstemperatur T_inj; Massenstrom folgt aus der
-        # Monatsleistung ṁ = P/(cp·(T_inj−T_amb)).
-        "mass_flow_rate_kg_s": 3.0,    # nur Referenz im 4-Phasen-Modus
-        "T_hot_K":  333.15,            # T_inj = 60 °C
+        "mass_flow_rate_kg_s": 3.0,
+        "T_hot_K":  333.15,
         "T_cold_K": 283.15,
         "fluid_storage_1_per_Pa": 4.5e-10,
         "solid_storage_1_per_Pa": 1.0e-10,
     },
-    # ------------------------------------------------------------------
-    # ZYKLEN – HIER FÜR STUDIERENDE
-    # ------------------------------------------------------------------
-    # Ein vollständiger Zyklus besteht aus 4 aufeinander folgenden Phasen:
-    #   1) charge                    – Beladung (heiß injizieren)
-    #   2) storage_after_charge      – Pause/Speicherung nach Beladung
-    #   3) discharge                 – Förderung (Wasser entnehmen)
-    #   4) storage_after_discharge   – Pause/Speicherung nach Förderung
-    #
-    # Periode T_Zyklus = charge + storage_after_charge + discharge + storage_after_discharge
-    # Gesamt­simulations­zeit = n_cycles * T_Zyklus
-    #
-    # Beispiele:
-    #   - Saisonal (1 Jahr/Zyklus): 91.25 / 91.25 / 91.25 / 91.25
-    #   - Sommerladung 120 d, Winterförderung 120 d, sonst Pause: 120 / 60 / 120 / 60
-    #   - Phase auf 0 setzen, um sie zu deaktivieren.
-    #
-    # Alternativ — Modus B (Monatsprofil): Setze cycles.monthly_power_W auf eine
-    # Liste von 12 Monatsleistungen [W] (positiv = laden/injizieren, negativ =
-    # fördern/entnehmen, 0 = Stillstand). Dann wird die 4-Phasen-Logik
-    # überschrieben; jeder Monat dauert 365.25/12 ≈ 30.44 d und die Sequenz wird
-    # n_cycles-mal (= Jahre) wiederholt. Als Referenzleistung dient
-    #   P_ref = mass_flow_rate_kg_s · cp · (T_hot_K − T_K),
-    # d. h. der Massenstrom wird linear mit P_month/P_ref skaliert. Optional gibt
-    # cycles.monthly_T_inj_K (12 Werte) die monatliche Vorlauftemperatur der
-    # Beladung vor (sonst T_hot_K). Auf None lassen für Modus A.
-    # ------------------------------------------------------------------
     "cycles": {
-        "n_cycles":                     2,     # Betriebsjahre (Modus B)
-        "charge_days":                 90,     # Modus A: Beladung (Tage)
+        "n_cycles":                     2,
+        "charge_days":                 90,
         "storage_after_charge_days":    0,
         "discharge_days":              90,
         "storage_after_discharge_days": 0,
-        "ramp_days":                    3.0,   # Übergangsrampe zwischen Monaten
-        # --- Modus B: Monatsprofil (AKTIV) — P[W] Jan…Dez, ΣP≈0 ---
-        # Aus P folgt die Pumprate ṁ = P/(cp·(T_inj−T_amb)); Spitze ~0.5 MW
-        # → ṁ ≈ 2.4 kg/s. Beliebig editierbar.
+        "ramp_days":                    3.0,
         "monthly_power_W": [
             -400_000, -350_000, -120_000, 0,
             +250_000, +450_000, +500_000, +400_000, +120_000,
             -180_000, -320_000, -350_000,
         ],
-        "monthly_T_inj_K":              None,   # optional: 12 Vorlauftemperaturen [K]
+        "monthly_T_inj_K":              None,
     },
     "time": {
-        "dt_seconds":           86400.0,    # 1 Tag (feine Zeitauflösung)
+        "dt_seconds":           86400.0,
         "output_every_n_steps": 5,
-        "gravity":              True,        # Auftrieb (heißes Wasser steigt)
+        "gravity":              True,
     },
     "output": {
         "prefix":    "ates_3d",
@@ -1807,7 +1446,6 @@ CONFIG: dict = {
         "variables": ["T", "p", "darcy_velocity"],
     },
     "solver": {
-        # BiCGSTAB+ILUT (schnell) oder "SparseLU" (direkt, robust).
         "solver_type":  "BiCGSTAB",
         "precon_type":  "ILUT",
         "linear_tol":   1.0e-10,
@@ -1821,9 +1459,6 @@ CONFIG: dict = {
 DAY = 86400.0
 G   = 9.81
 
-# ======================================================================
-#  Mesh – gmsh
-# ======================================================================
 def build_mesh(cfg: dict, out_dir: Path) -> Path:
     """Schichtmodell mit gmsh: 3 Schichten + 1 Brunnenbox im Aquifer."""
     msh_path = out_dir / f"{cfg['output']['prefix']}.msh"
@@ -1866,12 +1501,10 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     box_hw = gmsh.model.occ.addBox(hw[0] - dx / 2.0, hw[1] - dy / 2.0,
                                    z_screen_bot, dx, dy, h_screen)
 
-    # Alles fragmentieren (konforme Schnittflächen)
     gmsh.model.occ.fragment([(3, box_cb)],
                             [(3, box_aq), (3, box_ct), (3, box_hw)])
     gmsh.model.occ.synchronize()
 
-    # Volumen klassifizieren
     vol_aq, vol_ct, vol_cb, vol_hw = [], [], [], []
     for dim, tag in gmsh.model.getEntities(3):
         xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(dim, tag)
@@ -1882,7 +1515,6 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
         elif zc < z_aq_bot - 1e-6:
             vol_cb.append(tag)
         else:
-            # innerhalb Aquifer-z – evtl. Brunnenbox?
             xc = 0.5 * (xmin + xmax)
             yc = 0.5 * (ymin + ymax)
             small = ext_x < 0.5 * Lx
@@ -1893,19 +1525,16 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     if not vol_aq or not vol_hw:
         raise RuntimeError("Volumenklassifizierung fehlgeschlagen (gmsh-Fragmentierung).")
 
-    # Top-/Bottom-Außenflächen + Lateral-Aquifer-Flächen
     surf_top, surf_bot, surf_lat_aq = [], [], []
     for dim, tag in gmsh.model.getEntities(2):
         xmin, ymin, zmin, xmax, ymax, zmax = gmsh.model.occ.getBoundingBox(dim, tag)
         zc = 0.5 * (zmin + zmax)
-        # Top/Bottom: große horizontale Außenflächen
         if (xmax - xmin) >= 0.9 * Lx and abs(zc - z_top) < 1e-6:
             surf_top.append(tag)
             continue
         if (xmax - xmin) >= 0.9 * Lx and abs(zc - z_base) < 1e-6:
             surf_bot.append(tag)
             continue
-        # Lateral-Aquifer: vertikale Außenflächen, deren z-Bereich genau die Aquiferdicke umfasst
         on_x_edge = abs(xmin - x0) < 1e-6 and abs(xmax - x0) < 1e-6
         on_x_edge_pos = abs(xmin - (x0 + Lx)) < 1e-6 and abs(xmax - (x0 + Lx)) < 1e-6
         on_y_edge = abs(ymin - y0) < 1e-6 and abs(ymax - y0) < 1e-6
@@ -1915,7 +1544,6 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
         if on_outer and in_aquifer_z:
             surf_lat_aq.append(tag)
 
-    # Hüllflächen der Brunnenbox (für Distanzfeld / Neumann‑Wärme­fluss)
     surf_hw = []
     for tag in vol_hw:
         for d, t in gmsh.model.getBoundary([(3, tag)], oriented=False):
@@ -1923,7 +1551,6 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
                 surf_hw.append(abs(t))
     surf_hw = sorted(set(surf_hw))
 
-    # Physical Groups (Reihenfolge -> tag -> MaterialID nach reindex)
     gmsh.model.addPhysicalGroup(3, vol_aq, tag=1, name="aquifer")
     gmsh.model.addPhysicalGroup(3, vol_ct, tag=2, name="caprock_top")
     gmsh.model.addPhysicalGroup(3, vol_cb, tag=3, name="caprock_bottom")
@@ -1934,15 +1561,6 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     if surf_lat_aq:
         gmsh.model.addPhysicalGroup(2, surf_lat_aq, tag=14, name="lateral_aquifer")
 
-    # Zustromflaeche getrennt ausweisen. Grund: die Lateralflaeche traegt eine
-    # DRUCK-Randbedingung (der regionale Gradient), aber keine fuer die
-    # Temperatur. Ein Zustromrand ohne vorgeschriebene Temperatur ist bei
-    # advektionsdominierter Stroemung schlecht gestellt - die Galerkin-
-    # Diskretisierung erzeugt dort Oszillationen. Gemessen an einem Lauf ohne
-    # diese Gruppe: der Zustromrand schwankte zwischen 1.8 und 23.7 GradC,
-    # obwohl dort 10 GradC anstroemen. Die ABSTROMflaeche bleibt bewusst frei,
-    # sonst koennte die Waermefahne das Modell nicht verlassen - und genau das
-    # ist im Stroemungsfall die Aussage.
     _gw = cfg.get("regional_gw", {})
     if surf_lat_aq and _gw.get("enable", False):
         import math as _m
@@ -1954,17 +1572,12 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
             _cx, _cy = 0.5 * (_bb[0] + _bb[3]), 0.5 * (_bb[1] + _bb[4])
             _proj[_t] = _cx * _ex + _cy * _ey
         _lo, _hi = min(_proj.values()), max(_proj.values())
-        # Nur die stromaufwaertige Flaeche. Die seitlichen Flaechen liegen
-        # projiziert in der Mitte und werden mit der 25-%-Schwelle nicht
-        # erfasst - dort ist die Stroemung wandparallel, ein T-Zwang waere
-        # dort falsch.
         _thr = _lo + 0.25 * (_hi - _lo)
         _inflow = sorted(t for t, v in _proj.items() if v <= _thr)
         if _inflow:
             gmsh.model.addPhysicalGroup(2, _inflow, tag=15,
                                         name="lateral_inflow")
 
-    # Hülle der Brunnenbox (für Distanzfeld)
     well_surfaces: list[int] = []
     for tag in vol_hw:
         for d, t in gmsh.model.getBoundary([(3, tag)], oriented=False):
@@ -1981,7 +1594,6 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     gmsh.model.mesh.field.setNumber(f_thr, "DistMax", r_far)
     gmsh.model.mesh.field.setAsBackgroundMesh(f_thr)
 
-    # Innerhalb der Brunnenbox sehr feines Netz (Punkte der Filterbox)
     well_points: list[tuple[int, int]] = []
     for tag in vol_hw:
         for d, t in gmsh.model.getBoundary([(3, tag)], recursive=True, oriented=False):
@@ -2000,7 +1612,6 @@ def build_mesh(cfg: dict, out_dir: Path) -> Path:
     gmsh.finalize()
     return msh_path
 
-
 def _mesh_files(cfg: dict) -> dict[str, str]:
     prefix = cfg["output"]["prefix"]
     d = {
@@ -2015,21 +1626,11 @@ def _mesh_files(cfg: dict) -> dict[str, str]:
         d["lateral_inflow"] = f"{prefix}_physical_group_lateral_inflow.vtu"
     return d
 
-
 def _safe_name(name):
-    """Physical-Group-Namen plattform- und dateisystemsicher machen.
-
-    Namen koennen Zeichen enthalten, die in Dateinamen unzulaessig sind
-    (Slash "/", Backslash, Leerzeichen, Umlaute, ...). Ein Slash wuerde
-    von pyvista als Ordnertrennung gedeutet -> FileNotFoundError. Nur
-    ASCII-Buchstaben/Ziffern sowie . _ - bleiben erhalten; alles andere
-    wird durch "_" ersetzt. So laeuft es auf Windows, Linux und macOS
-    gleichermassen.
-    """
+    """Physical-Group-Namen plattform- und dateisystemsicher machen."""
     keep = ("abcdefghijklmnopqrstuvwxyz"
             "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
     return "".join(c if c in keep else "_" for c in str(name))
-
 
 def convert_mesh(cfg: dict, msh_path: Path, out_dir: Path) -> dict[str, str]:
     """gmsh-Mesh -> OGS .vtu (Domäne + Subdomänen)."""
@@ -2048,19 +1649,8 @@ def convert_mesh(cfg: dict, msh_path: Path, out_dir: Path) -> dict[str, str]:
         mesh.save(str(out_dir / fname), binary=True)
     return _mesh_files(cfg)
 
-
-# ======================================================================
-#  Zyklus-Kurven
-# ======================================================================
 def build_cycle_curves(cfg: dict, rate_mult=None) -> dict:
-    """Normierte Pump-/Leistungskurve g(t) ∈ [−1,1] + Beladungs-Intervalle
-    (wie im validierten 2D-Modell).
-
-    Brunnenmodell (physikalisch korrekt für OGS-HT): Massenquelle IMMER aktiv
-    (∝ P, /ρ in build_prj); Injektionstemperatur per Dirichlet nur in den
-    Beladungs-Intervallen; Förderung = reine Massensenke (dynamische Entnahme-
-    temperatur). rate_mult skaliert die Förderrate je Monat (Bedarfsführung).
-    """
+    """Normierte Pump-/Leistungskurve g(t) ∈ [−1,1] + Beladungs-Intervalle"""
     cyc  = cfg["cycles"]
     n    = cyc["n_cycles"]
     ramp = max(60.0, cyc["ramp_days"] * DAY)
@@ -2121,7 +1711,6 @@ def build_cycle_curves(cfg: dict, rate_mult=None) -> dict:
                 "charge_intervals": _merge(ivs), "P_nom_W": P_nom,
                 "mdot_nom_kg_s": mdot_nom, "mode": "monthly"}
 
-    # === 4-Phasen-Modus ===
     mdot_nom = cfg["operation"]["mass_flow_rate_kg_s"]
     P_nom    = mdot_nom * cp_f * dT_ref
     durs = [cyc["charge_days"] * DAY, cyc["storage_after_charge_days"] * DAY,
@@ -2134,16 +1723,11 @@ def build_cycle_curves(cfg: dict, rate_mult=None) -> dict:
             "charge_intervals": charge_intervals, "P_nom_W": P_nom,
             "mdot_nom_kg_s": mdot_nom, "mode": "phases"}
 
-
-# ======================================================================
-#  XML / .prj Generierung
-# ======================================================================
 def _se(parent: ET.Element, tag: str, text=None, **attrs) -> ET.Element:
     el = ET.SubElement(parent, tag, **{k: str(v) for k, v in attrs.items()})
     if text is not None:
         el.text = str(text)
     return el
-
 
 def _add_const_property(parent: ET.Element, name: str, value: float) -> None:
     p = _se(parent, "property")
@@ -2151,13 +1735,11 @@ def _add_const_property(parent: ET.Element, name: str, value: float) -> None:
     _se(p, "type", "Constant")
     _se(p, "value", value)
 
-
 def _add_phase_aqueous(phases: ET.Element, fluid: dict, op: dict) -> None:
     ph = _se(phases, "phase")
     _se(ph, "type", "AqueousLiquid")
     props = _se(ph, "properties")
 
-    # Dichte: T-abhängig ρ(T)=ρ_ref(1+β(T−T_ref)) für Auftrieb (β<0), sonst const
     p = _se(props, "property")
     _se(p, "name", "density")
     beta = fluid.get("beta_1_per_K", 0.0)
@@ -2172,7 +1754,6 @@ def _add_phase_aqueous(phases: ET.Element, fluid: dict, op: dict) -> None:
         _se(p, "type", "Constant")
         _se(p, "value", fluid["rho_ref_kg_m3"])
 
-    # Viskosität: optional T-abhängig (Linear) — verstärkt den Auftrieb
     vslope = fluid.get("visc_slope_1_per_K")
     if vslope:
         pv = _se(props, "property"); _se(pv, "name", "viscosity"); _se(pv, "type", "Linear")
@@ -2187,7 +1768,6 @@ def _add_phase_aqueous(phases: ET.Element, fluid: dict, op: dict) -> None:
     _add_const_property(props, "thermal_conductivity",   fluid["lambda_W_mK"])
     _add_const_property(props, "storage",                op["fluid_storage_1_per_Pa"])
 
-
 def _add_phase_solid(phases: ET.Element, m: dict, op: dict) -> None:
     ph = _se(phases, "phase")
     _se(ph, "type", "Solid")
@@ -2196,7 +1776,6 @@ def _add_phase_solid(phases: ET.Element, m: dict, op: dict) -> None:
     _add_const_property(props, "specific_heat_capacity", m["cp_s_J_kgK"])
     _add_const_property(props, "thermal_conductivity",   m["lambda_s_W_mK"])
     _add_const_property(props, "storage",                op["solid_storage_1_per_Pa"])
-
 
 def _add_medium(media: ET.Element, mid: int, mat: dict, fluid: dict,
                 op: dict, disp: dict) -> None:
@@ -2208,7 +1787,6 @@ def _add_medium(media: ET.Element, mid: int, mat: dict, fluid: dict,
     _add_const_property(props, "porosity",     mat["porosity"])
     _add_const_property(props, "permeability", mat["permeability_m2"])
 
-    # Effektive Wärmeleitfähigkeit: Mischung aus Phasen über Porosität
     p = _se(props, "property")
     _se(p, "name", "thermal_conductivity")
     _se(p, "type", "EffectiveThermalConductivityPorosityMixing")
@@ -2217,13 +1795,11 @@ def _add_medium(media: ET.Element, mid: int, mat: dict, fluid: dict,
     _add_const_property(props, "thermal_transversal_dispersivity",  disp["alpha_T_m"])
     _add_const_property(props, "storage", 0.0)
 
-
 def _curve_xml(parent: ET.Element, name: str, t: np.ndarray, v: np.ndarray) -> None:
     c = _se(parent, "curve")
     _se(c, "name", name)
     _se(c, "coords", " ".join(f"{x:.6e}" for x in t))
     _se(c, "values", " ".join(f"{x:.6e}" for x in v))
-
 
 def _curve_scaled_param(parent: ET.Element, name: str,
                         curve_name: str, base_param_name: str) -> None:
@@ -2233,13 +1809,11 @@ def _curve_scaled_param(parent: ET.Element, name: str,
     _se(p, "curve", curve_name)
     _se(p, "parameter", base_param_name)
 
-
 def _const_param(parent: ET.Element, name: str, value: float) -> None:
     p = _se(parent, "parameter")
     _se(p, "name", name)
     _se(p, "type", "Constant")
     _se(p, "value", value)
-
 
 def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict) -> Path:
     prefix = cfg["output"]["prefix"]
@@ -2248,7 +1822,6 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     init   = cfg["initial"]
     sol    = cfg["solver"]
 
-    # Brunnenfilter-Geometrie
     h_screen = (cfg["layers"]["aquifer_thickness_m"]
                 - cfg["wells"]["screen_top_offset_m"]
                 - cfg["wells"]["screen_bottom_offset_m"])
@@ -2256,15 +1829,11 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     dy_w = cfg["wells"]["screen_dy_m"]
     V_well = dx_w * dy_w * h_screen
 
-    # Basis-Amplitude der Massenquelle. WICHTIG: Der HT-Druck-Quellterm ist
-    # VOLUMETRISCH [1/s], nicht massenbasiert -> durch ρ_f teilen (sonst ~1000×
-    # Über-Injektion). cycle_power ∈[−1,1] skaliert zeitabhängig.
     rho_f = fluid["rho_ref_kg_m3"]
-    q_mass_amp = curves["mdot_nom_kg_s"] / rho_f / V_well   # 1/s (= m³/m³/s)
+    q_mass_amp = curves["mdot_nom_kg_s"] / rho_f / V_well
 
     root = ET.Element("OpenGeoSysProject")
 
-    # -- Meshes
     meshes = ET.SubElement(root, "meshes")
     _mesh_keys = ["domain", "top", "bottom", "hot_well_vol", "hot_well_surf"]
     if "lateral_aquifer" in mesh_files:
@@ -2274,7 +1843,6 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     for k in _mesh_keys:
         _se(meshes, "mesh", mesh_files[k])
 
-    # -- Processes
     processes = _se(root, "processes")
     proc = _se(processes, "process")
     _se(proc, "name", "HT")
@@ -2289,7 +1857,6 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     bf = "0 0 -9.81" if cfg["time"]["gravity"] else "0 0 0"
     _se(proc, "specific_body_force", bf)
 
-    # -- Media (Reihenfolge entspricht den MaterialIDs nach msh2vtu reindex)
     well_mat = dict(cfg["materials"]["aquifer"])
     well_mat["permeability_m2"] = cfg["wells"]["screen_permeability_m2"]
     disp = cfg["dispersion"]
@@ -2299,7 +1866,6 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     _add_medium(media, 2, cfg["materials"]["caprock_bottom"], fluid, op, disp)
     _add_medium(media, 3, well_mat,                           fluid, op, disp)
 
-    # -- Time loop
     tl = _se(root, "time_loop")
     procs = _se(tl, "processes")
     p_ref = _se(procs, "process", ref="HT")
@@ -2311,28 +1877,17 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     td = _se(p_ref, "time_discretization")
     _se(td, "type", "BackwardEuler")
 
-    # Adaptive Zeitschrittweite: IterationNumberBasedTimeStepping kann die
-    # Schrittweite bei Nichtkonvergenz reduzieren (und danach wieder
-    # erhöhen) — anders als FixedTimeStepping, das an harten Phasen-
-    # übergängen (Flussumkehr + Dirichlet-T-Sprung am Brunnen) sonst
-    # abbricht ("Time stepper cannot reduce the time step size further").
-    # Normalbetrieb bleibt beim 1-Tages-Schritt (maximum_dt = dt0).
     dt0 = cfg["time"]["dt_seconds"]
     ts = _se(p_ref, "time_stepping")
     _se(ts, "type",        "IterationNumberBasedTimeStepping")
     _se(ts, "t_initial",   0.0)
     _se(ts, "t_end",       curves["t_total"])
     _se(ts, "initial_dt",  dt0)
-    _se(ts, "minimum_dt",  dt0 / 64.0)   # erlaubt Reduktion an den Übergängen
-    _se(ts, "maximum_dt",  dt0)          # nie gröber als der Standard-Schritt
-    # Bei wenigen Nichtlinear-Iterationen wächst dt (bis maximum_dt), bei
-    # vielen schrumpft es; bei Nichtkonvergenz wird der Schritt verworfen
-    # und mit kleinerem dt wiederholt.
+    _se(ts, "minimum_dt",  dt0 / 64.0)
+    _se(ts, "maximum_dt",  dt0)
     _se(ts, "number_iterations", "1 4 8 12")
     _se(ts, "multiplier",        "1.5 1.0 0.5 0.25")
 
-    # -- Output: feste Ausgabezeitpunkte -> gleichmäßige Snapshots,
-    #    unabhängig von der jetzt variablen Schrittweite.
     out_step = dt0 * cfg["time"]["output_every_n_steps"]
     n_out    = int(np.ceil(curves["t_total"] / out_step))
     out_times = sorted(set(
@@ -2347,12 +1902,9 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     for v in cfg["output"]["variables"]:
         _se(vars_el, "variable", v)
 
-    # -- Parameters
     params = _se(root, "parameters")
     _const_param(params, "T0", init["T_K"])
 
-    # Druck: bei Gravitation hydrostatisch p(z)=p_top+ρ_ref·g·(z_top−z); die
-    # regionale GW-Strömung ist ein zusätzlicher lateraler Gradient in x/y.
     z_top = (cfg["domain"]["z_base_m"] + cfg["layers"]["caprock_bottom_thickness_m"]
              + cfg["layers"]["aquifer_thickness_m"] + cfg["layers"]["caprock_top_thickness_m"])
     rho0  = fluid["rho_ref_kg_m3"]; p_top = init["p_Pa"]
@@ -2369,47 +1921,35 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         p_lat = _se(params, "parameter"); _se(p_lat, "name", "p_lateral"); _se(p_lat, "type", "Function")
         _se(p_lat, "expression", f"{hydro} + ({gx:.6g})*x + ({gy:.6g})*y")
 
-    # Massenquelle (volumetrisch, /ρ) — Kurve cycle_power ∈[−1,1]
     _const_param(params, "q_mass_amp", q_mass_amp)
     _curve_scaled_param(params, "q_mass_well", "cycle_power", "q_mass_amp")
-    # Injektionstemperatur(en) für die Beladungs-Dirichlet-BCs
     tinj_values = sorted({round(iv[2], 6) for iv in curves["charge_intervals"]})
     tinj_param = {}
     for idx, Ti in enumerate(tinj_values):
         nm = "T_inj" if len(tinj_values) == 1 else f"T_inj_{idx}"
         _const_param(params, nm, Ti); tinj_param[round(Ti, 6)] = nm
 
-    # -- Curves
     cv = _se(root, "curves")
     t, v = curves["cycle_power"]; _curve_xml(cv, "cycle_power", t, v)
 
-    # -- Process variables
     pvars = _se(root, "process_variables")
 
-    # Temperatur
     pv_T = _se(pvars, "process_variable")
     _se(pv_T, "name", "T")
     _se(pv_T, "components", 1)
     _se(pv_T, "order", 1)
     _se(pv_T, "initial_condition", "T0")
     bcs_T = _se(pv_T, "boundary_conditions")
-    # Aussenränder (Top/Bottom): konstante Hintergrund-T
     for face in ("top", "bottom"):
         bc = _se(bcs_T, "boundary_condition")
         _se(bc, "mesh",      Path(mesh_files[face]).stem)
         _se(bc, "type",      "Dirichlet")
         _se(bc, "parameter", "T0")
-    # Zustromrand: anstroemendes Grundwasser hat Hintergrundtemperatur.
-    # Ohne diese Bedingung ist die Temperatur am Zustrom unbestimmt und die
-    # Loesung oszilliert dort (siehe Kommentar bei der Physical Group).
     if "lateral_inflow" in mesh_files:
         bc = _se(bcs_T, "boundary_condition")
         _se(bc, "mesh",      Path(mesh_files["lateral_inflow"]).stem)
         _se(bc, "type",      "Dirichlet")
         _se(bc, "parameter", "T0")
-    # Brunnen: Injektionstemperatur T_inj NUR während der Beladungs-Intervalle
-    # (DirichletWithinTimeInterval). Bei Förderung/Ruhe kein T-Zwang -> die
-    # Entnahmetemperatur wird dynamisch berechnet.
     well_mesh_T = Path(mesh_files["hot_well_vol"]).stem
     for t0, t1, Ti in curves["charge_intervals"]:
         bc = _se(bcs_T, "boundary_condition")
@@ -2419,7 +1959,6 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         ti = _se(bc, "time_interval")
         _se(ti, "start", f"{t0:.6e}"); _se(ti, "end", f"{t1:.6e}")
 
-    # Druck
     pv_p = _se(pvars, "process_variable")
     _se(pv_p, "name", "p")
     _se(pv_p, "components", 1)
@@ -2431,9 +1970,6 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         _se(bc, "mesh",      Path(mesh_files[face]).stem)
         _se(bc, "type",      "Dirichlet")
         _se(bc, "parameter", "p0")
-    # Lateral-Aquifer als Druck-Outlet, damit das am Brunnen injizierte
-    # Wasser entweichen kann. Falls regional_gw.enable=True: linearer
-    # Druckgradient statt konstantem p0 → Hintergrund-Strömung.
     if "lateral_aquifer" in mesh_files:
         bc = _se(bcs_p, "boundary_condition")
         _se(bc, "mesh",      Path(mesh_files["lateral_aquifer"]).stem)
@@ -2448,7 +1984,6 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     _se(st, "type",      "Volumetric")
     _se(st, "parameter", "q_mass_well")
 
-    # -- Solvers
     nls = _se(root, "nonlinear_solvers")
     n = _se(nls, "nonlinear_solver")
     _se(n, "name",          "basic_picard")
@@ -2460,8 +1995,6 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
     ls = _se(lss, "linear_solver")
     _se(ls, "name", "general_linear_solver")
     eig = _se(ls, "eigen")
-    # Solver konfigurierbar: iterativ (BiCGSTAB+ILUT, skaliert gut auf große Netze)
-    # oder direkt (SparseLU, robust). scaling=true gleicht T/p-Größenordnungen aus.
     stype = sol.get("solver_type", "BiCGSTAB")
     _se(eig, "solver_type", stype)
     if stype != "SparseLU":
@@ -2470,13 +2003,11 @@ def build_prj(cfg: dict, out_dir: Path, mesh_files: dict[str, str], curves: dict
         _se(eig, "error_tolerance",    sol["linear_tol"])
     _se(eig, "scaling",            "true")
 
-    # Schreiben (mit XML-Deklaration und Einrückung)
     _indent(root)
     prj_path = out_dir / f"{prefix}.prj"
     tree = ET.ElementTree(root)
     tree.write(prj_path, encoding="ISO-8859-1", xml_declaration=True)
     return prj_path
-
 
 def _indent(elem: ET.Element, level: int = 0) -> None:
     pad = "\n" + level * "    "
@@ -2490,10 +2021,6 @@ def _indent(elem: ET.Element, level: int = 0) -> None:
     if level and not (elem.tail and elem.tail.strip()):
         elem.tail = pad
 
-
-# ======================================================================
-#  OGS ausführen
-# ======================================================================
 def run_ogs(prj_path: Path) -> int:
     ogs_exe = shutil.which("ogs") or shutil.which("ogs.exe")
     if not ogs_exe:
@@ -2504,10 +2031,8 @@ def run_ogs(prj_path: Path) -> int:
     print(">>", " ".join(cmd))
     return subprocess.call(cmd)
 
-
 def measure_produced_T(cfg: dict, out_dir: Path) -> dict:
-    """|P|-gewichtete mittlere Brunnentemperatur je Fördermonat (P<0),
-    gemittelt über die eingeschwungenen Jahre (zweite Laufhälfte)."""
+    """|P|-gewichtete mittlere Brunnentemperatur je Fördermonat (P<0),"""
     import pyvista as pv
     prefix = cfg["output"]["prefix"]
     files = sorted(out_dir.glob(f"{prefix}_ts_*.vtu"),
@@ -2539,10 +2064,6 @@ def measure_produced_T(cfg: dict, out_dir: Path) -> dict:
             res[mo] = float(np.mean(vals))
     return res
 
-
-# ======================================================================
-#  CLI
-# ======================================================================
 def main() -> int:
     ap = argparse.ArgumentParser(description="ATES 3D OGS demo")
     ap.add_argument("--no-mesh", action="store_true", help="Mesh nicht neu erzeugen")
@@ -2570,7 +2091,6 @@ def main() -> int:
     else:
         mesh_files = _mesh_files(CONFIG)
 
-    # Förderregelung: fest oder bedarfsgeführt (iterativ, wie 2D)
     monthly = CONFIG["cycles"].get("monthly_power_W") is not None
     demand  = (CONFIG["wells"].get("production_control", "fixed") == "demand"
                and monthly and not args.no_run)
@@ -2599,9 +2119,6 @@ def main() -> int:
                 rate_mult[mo] = 0.5 * rate_mult[mo] + 0.5 * target
             print("  T_prod_avg [degC]:", {mo: round(T-273.15, 1) for mo, T in Tp.items()})
             print("  rate_factors:", [round(x, 2) for x in rate_mult])
-    # --- automatischer Pruef- und Auswertebericht (ates_report.py) ----
-    # Das Modul liegt in exercises/ates/. Schlaegt der Bericht fehl, darf der
-    # Lauf davon nicht betroffen sein -> auto_report faengt selbst alles ab.
     try:
         import sys as _sys
         _here = Path(__file__).resolve()
@@ -2617,34 +2134,17 @@ def main() -> int:
 
     return 0
 
-
-
-
 C = CONFIG
 G = 9.81
 RHO_F = C["fluid"]["rho_ref_kg_m3"]
 
-# --- Temperaturen -----------------------------------------------------
-# Aquifertemperatur = Referenztemperatur des Fluids, damit am ungestoerten
-# Aquifer exakt mu = fluid.viscosity_Pa_s gilt (OGS rechnet
-# mu(T) = mu_ref * (1 + slope*(T - T_ref))). Nur dann ist die Umrechnung
-# kf -> k unten richtig.
 T_AQ_K = FALL["T_aquifer_C"] + 273.15
 C["initial"]["T_K"] = T_AQ_K
 C["fluid"]["T_ref_K"] = T_AQ_K
 C["operation"]["T_hot_K"] = FALL["T_injektion_C"] + 273.15
-# operation.T_cold_K wird ABSICHTLICH nicht gesetzt: kein Modell liest den
-# Schluessel. Bei Foerderung gibt es keine Temperatur-Randbedingung, die
-# Foerdertemperatur ist rein dynamisch.
 
-MU = C["fluid"]["viscosity_Pa_s"]        # bei T_ref, hier also bei T_aquifer
+MU = C["fluid"]["viscosity_Pa_s"]
 
-# --- Plausibilitaet der Eingaben --------------------------------------
-# mu(T) = mu_ref*(1 + slope*(T - T_ref)) ist eine GERADE und hat eine
-# Nullstelle: 1/0.0128 = 78.1 K ueber der Aquifertemperatur, hier also bei
-# 88.1 GradC. Darueber wird mu negativ und das Modell rechnet stillschweigend
-# Unsinn. Im Stroemungsfall trifft das doppelt, weil die Mobilitaet k/mu
-# direkt in die Abstromgeschwindigkeit eingeht.
 _T_NULL = FALL["T_aquifer_C"] - 1.0 / C["fluid"]["visc_slope_1_per_K"]
 if FALL["T_injektion_C"] > _T_NULL - 10.0:
     raise ValueError(
@@ -2655,29 +2155,14 @@ if FALL["T_injektion_C"] > _T_NULL - 10.0:
         f"Injektionstemperaturen muss fluid.visc_slope_1_per_K angepasst "
         f"werden.")
 
-
 def _k(kf_m_s: float) -> float:
-    """Durchlaessigkeitsbeiwert kf [m/s] -> Permeabilitaet k [m2].
-
-        k = kf * mu / (rho_f * g)
-
-    Das mu muss dasjenige sein, mit dem OGS bei Aquifertemperatur rechnet,
-    sonst hat das Modell eine andere Durchlaessigkeit als der Standort.
-    Genau das war in der Vorgaengerfassung passiert: k = 6.12e-11 m2 mit
-    dem Kommentar "kf = 6e-4 m/s", umgerechnet aber mit mu = 1.0e-3
-    (Wasser bei 20 GradC), waehrend das Modell bei 10 GradC mit
-    mu = 1.3e-3 rechnet. Der Aquifer war damit 30 % zu dicht - und die
-    Fahne wanderte im Modell 377 m/a statt der 489 m/a des Standorts.
-    """
+    """Durchlaessigkeitsbeiwert kf [m/s] -> Permeabilitaet k [m2]."""
     return kf_m_s * MU / (RHO_F * G)
 
-
-# --- Regionale Stroemung ---------------------------------------------
 C["regional_gw"]["enable"] = True
 C["regional_gw"]["gradient_m_per_m"] = FALL["gw_gradient"]
 C["regional_gw"]["direction_deg"] = FALL["gw_richtung_grad"]
 
-# --- Aquifer ----------------------------------------------------------
 _a = FALL["aquifer"]
 C["layers"]["aquifer_thickness_m"] = _a["maechtigkeit_m"]
 aq = C["materials"]["aquifer"]
@@ -2687,7 +2172,6 @@ aq["rho_s_kg_m3"] = _a["dichte_korn_kg_m3"]
 aq["cp_s_J_kgK"] = _a["waermekapazitaet_korn_J_kgK"]
 aq["lambda_s_W_mK"] = _a["waermeleitfaehigkeit_korn_W_mK"]
 
-# --- Deckgestein ------------------------------------------------------
 _d = FALL["deckgestein"]
 C["layers"]["caprock_top_thickness_m"] = _d["maechtigkeit_m"]
 C["layers"]["caprock_bottom_thickness_m"] = _d["maechtigkeit_m"]
@@ -2699,66 +2183,35 @@ for _key in ("caprock_top", "caprock_bottom"):
     cr["cp_s_J_kgK"] = _d["waermekapazitaet_korn_J_kgK"]
     cr["lambda_s_W_mK"] = _d["waermeleitfaehigkeit_korn_W_mK"]
 
-# --- Geometrie: Platz stromab ----------------------------------------
-# Die Fahne driftet 489 m im Jahr, in zwei Betriebsjahren also 978 m. Der
-# Brunnen steht deshalb weit stromauf, damit sie im Modell bleibt und man
-# ihr beim Weglaufen zusehen kann: 1300 m frei stromab, 300 m stromauf.
-C["domain"]["size_x_m"] = 2000.0        # Stroemungsrichtung
-C["domain"]["size_y_m"] = 400.0         # quer - die Fahne wird schmal
+C["domain"]["size_x_m"] = 2000.0
+C["domain"]["size_y_m"] = 400.0
 C["wells"]["hot_well_xy"] = (-700.0, 0.0)
 
-# --- Brunnen ----------------------------------------------------------
 _s = FALL["filter_kantenlaenge_m"]
 C["wells"]["screen_dx_m"] = _s
 C["wells"]["screen_dy_m"] = _s
 C["wells"]["screen_top_offset_m"] = 0.0
 C["wells"]["screen_bottom_offset_m"] = 0.0
 C["wells"]["screen_permeability_m2"] = _k(_a["kf_m_s"])
-# "fixed": der Massenstrom folgt dem Lastprofil, der Brunnen regelt die
-# Foerderrate NICHT nach. Die Vorgabe des Modells waere "demand".
 C["wells"]["production_control"] = "fixed"
 
-# --- Lastprofil und Massenstrom --------------------------------------
 P = FALL["monatsleistung_W"]
 C["cycles"]["monthly_power_W"] = P
 C["cycles"]["monthly_T_inj_K"] = None
 C["cycles"]["n_cycles"] = FALL["betriebsjahre"]
 C["cycles"]["ramp_days"] = 3.0
-# Im Monatsprofil-Modus liest das Modell diesen Schluessel NICHT; es rechnet
-# mdot = P_max/(c_f*dT_ref) mit dT_ref = T_hot_K - initial.T_K. Hier wird
-# genau diese Formel eingetragen, damit Konsole und Rechnung dasselbe sagen.
 DT_REF = FALL["T_injektion_C"] - FALL["T_aquifer_C"]
 C["operation"]["mass_flow_rate_kg_s"] = (
     max(abs(p) for p in P) / (C["fluid"]["cp_J_kgK"] * DT_REF))
 
-# --- Physik, die nicht zum Standort gehoert ---------------------------
 C["time"]["gravity"] = True
 C["dispersion"]["alpha_L_m"] = 2.0
 C["dispersion"]["alpha_T_m"] = 0.2
 
-# Thermische Ausdehnung rho(T) = rho_ref*(1 + beta*(T - T_ref)) - die einzige
-# Zahl, die den Auftrieb steuert. Explizit gesetzt, damit sie nicht
-# stillschweigend geerbt wird; sie begruendet die 60 m Deckgestein.
 C["fluid"]["beta_1_per_K"] = -4.0e-4
 
-# Hinweis zum Vergleich mit Fall 1: dessen Deckgestein ist vertikal
-# anisotrop (k_v = 0.1*k_h). Das 3D-Modell schreibt nur eine SKALARE
-# Permeabilitaet - hier ist das Deckgestein zwingend isotrop und vertikal
-# damit zehnmal durchlaessiger. Ein Schluessel "permeability_ver_m2" wuerde
-# im 3D-CONFIG kommentarlos verschluckt.
-
-# Speicherkoeffizient - siehe ausfuehrliche Begruendung in
-# ates_2D.py. Explizit gesetzt, damit er nicht stillschweigend
-# aus dem Uebungsskript geerbt wird.
 C["operation"]["solid_storage_1_per_Pa"] = 1.0e-9
 
-# --- Netz -------------------------------------------------------------
-# Fein am Brunnen, wo Einspeicherung und Rueckgewinnung stattfinden. Wie
-# scharf die Fahne 500 m stromab noch ist, aendert an der Aussage nichts -
-# dass sie weglaeuft, sieht man auch auf grobem Fernfeldnetz. Im
-# Laengsschnitt verschmiert die lineare Interpolation die 1-K-Kontur dort
-# ueber eine ganze Zelle nach oben; das ist eine Eigenschaft der
-# Darstellung, nicht der Rechnung.
 C["mesh"] = {
     "size_in_well_m":          1.0,
     "size_near_wells_m":       4.0,
@@ -2767,22 +2220,12 @@ C["mesh"] = {
     "well_size_radius_far_m": 160.0,
 }
 
-# Der Stroemungsfall ist deutlich nichtlinearer als der Speicherfall:
-# Advektion, Auftrieb und Viskositaetskontrast koppeln sich
-# (mu(60 GradC) = 4.7e-4 gegen 1.3e-3 kalt, k/mu lokal also 2.8-fach).
-# Mit dem Standardbudget von 20 Picard-Iterationen brach der Lauf ab.
-# ACHTUNG: jenseits von etwa 2.7 Betriebsjahren hilft auch dieses Budget
-# nicht mehr - dort springt das Residuum in einen Grenzzyklus statt zu
-# fallen, und ein groesseres Budget aendert daran nichts. Die zwei
-# vorgesehenen Betriebsjahre bleiben mit Abstand darunter.
 C["solver"]["nonlinear_iter"] = 50
 
-# --- Zeit und Ausgabe -------------------------------------------------
 C["time"]["dt_seconds"] = 86400.0
-C["time"]["output_every_n_steps"] = 5    # dichte Ausgabe: die Drift ist schnell
+C["time"]["output_every_n_steps"] = 5
 C["output"]["out_dir"] = str(Path(__file__).resolve().parent / "ergebnisse_3d")
 C["output"]["prefix"] = "ates3d_gw"
-
 
 if __name__ == "__main__":
     kf = _a["kf_m_s"]
